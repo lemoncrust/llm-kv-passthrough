@@ -65,6 +65,17 @@ def serve(
         "--simple-timing/--roofline-timing",
         help="Use fixed ms/token timing instead of the roofline model",
     ),
+    calibrated_timing: bool | None = typer.Option(
+        None,
+        "--calibrated-timing",
+        help="Scale the roofline by measured anchors (experiments + "
+        "published benchmarks) for the emulated model/hardware",
+    ),
+    anchors_file: str | None = typer.Option(
+        None,
+        "--anchors",
+        help="YAML/JSON file of extra timing anchors (measured TTFT/TPOT)",
+    ),
     prefill_ms_per_token: float | None = typer.Option(
         None,
         "--prefill-ms-per-token",
@@ -123,6 +134,8 @@ def serve(
         key: value
         for key, value in {
             "simple_mode": simple_timing,
+            "calibrated": calibrated_timing,
+            "anchors_file": anchors_file,
             "prefill_ms_per_token": prefill_ms_per_token,
             "decode_ms_per_token": decode_ms_per_token,
             "pp_size": pp_size,

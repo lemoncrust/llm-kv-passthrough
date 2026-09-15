@@ -53,6 +53,10 @@ class ModelProfile:
     # Explicit per-head dimension for models where head_dim != hidden/num_heads
     # (e.g. Qwen3.8-27B: hidden 5120, 24 heads, head_dim 256). None = derive.
     head_dim_override: int | None = None
+    # Explicit parameter count in billions for models where the dense-formula
+    # estimate is wrong (MoE: use ACTIVE params — that is what the roofline's
+    # compute and per-token weight traffic see). None = derive from dims.
+    params_billions_override: float | None = None
 
     def __post_init__(self) -> None:
         """Set num_heads if not specified."""
@@ -140,6 +144,9 @@ class ModelProfile:
         Returns:
             Estimated parameters in billions.
         """
+        if self.params_billions_override is not None:
+            return self.params_billions_override
+
         # Embedding: vocab_size * hidden
         embedding_params = self.vocab_size * self.hidden
 
@@ -276,6 +283,22 @@ MODEL_PROFILES: dict[str, ModelProfile] = {
         # therefore not part of the LMCache storage workload.
     ),
     # Qwen 2.5 family
+    "gpt-oss-120b": ModelProfile(
+        name="GPT-OSS 120B (MoE, 5.1B active)",
+        layers=36,
+        hidden=2880,
+        kv_heads=8,
+        num_heads=64,
+        head_dim_override=64,
+        intermediate=2880,
+        vocab_size=201088,
+        max_seq_len=131072,
+        dtype="fp8",  # closest supported to the published FP4 serving point
+        # MoE: 116.8B total / ~5.1B active per token. The roofline's compute
+        # and per-token weight traffic follow ACTIVE params; capacity
+        # planning for full weights must use the total separately.
+        params_billions_override=5.1,
+    ),
     "qwen-2.5-7b": ModelProfile(
         name="Qwen 2.5 7B",
         layers=28,

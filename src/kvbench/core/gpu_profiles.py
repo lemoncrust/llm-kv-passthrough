@@ -131,6 +131,24 @@ GPU_PROFILES: dict[str, GPUProfile] = {
         nvlink_bandwidth_gb_s=1800.0,  # NVLink 5
         tdp_watts=1400,
     ),
+    "GB10": GPUProfile(
+        name="NVIDIA GB10 (DGX Spark)",
+        bf16_tflops=125.0,           # dense BF16 from the 1 PFLOP FP4-sparse ladder
+        hbm_bandwidth_tb_s=0.273,    # LPDDR5x unified memory
+        hbm_capacity_gb=128,
+        nvlink_bandwidth_gb_s=None,  # single package (NVLink-C2C to CPU only)
+        tdp_watts=140,
+    ),
+    "STRIX_HALO_CPU": GPUProfile(
+        name="AMD Ryzen AI MAX+ 395 (Strix Halo) - CPU inference",
+        # Coarse CPU envelope for emulating CPU-backend serving; pair with
+        # the calibrated timing strategy (a measured anchor exists for it).
+        bf16_tflops=5.0,
+        hbm_bandwidth_tb_s=0.256,    # 256-bit LPDDR5x-8000
+        hbm_capacity_gb=128,
+        nvlink_bandwidth_gb_s=None,
+        tdp_watts=120,
+    ),
     "H100_SXM": GPUProfile(
         name="NVIDIA H100 SXM",
         bf16_tflops=989.5,

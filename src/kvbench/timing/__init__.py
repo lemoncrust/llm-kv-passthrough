@@ -35,6 +35,12 @@ from kvbench.timing.communication import (
     calculate_allreduce_ms,
     calculate_pipeline_send_recv_ms,
 )
+from kvbench.timing.calibration import (
+    BUILTIN_ANCHORS,
+    CalibratedTimingStrategy,
+    TimingAnchor,
+    load_anchors,
+)
 from kvbench.timing.factory import create_timing_strategy
 from kvbench.timing.roofline import RooflineTimingStrategy
 from kvbench.timing.simple import SimpleTimingStrategy
@@ -45,6 +51,10 @@ __all__ = [
     "TimingResult",
     "SimpleTimingStrategy",
     "RooflineTimingStrategy",
+    "CalibratedTimingStrategy",
+    "TimingAnchor",
+    "BUILTIN_ANCHORS",
+    "load_anchors",
     "create_timing_strategy",
     "calculate_allreduce_ms",
     "calculate_allreduce_message_size",

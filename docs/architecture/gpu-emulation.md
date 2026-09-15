@@ -170,3 +170,41 @@ kvbench benchmark --gpu H100_SXM --report timing_comparison.json
 2. **Conservative efficiency**: Start with 0.7 efficiency and adjust based on validation
 3. **Include TP overhead**: For multi-GPU, account for communication costs
 4. **Validate periodically**: Compare emulated vs. real timing when possible
+
+## Calibrated timing (measured anchors)
+
+The roofline model runs from datasheet peaks scaled by a single
+`efficiency_factor`. `--calibrated-timing` replaces that guess with
+**measured data**: the roofline (at efficiency 1.0) is scaled by ratios
+derived from *anchor* measurements — first-party lab runs and published
+benchmarks such as SemiAnalysis InferenceX/InferenceMAX — and the scales
+are extrapolated to the model × hardware you ask kvbench to represent.
+
+- Prefill (TTFT-derived) and decode (TPOT-derived) are calibrated
+  independently, since MFU and MBU diverge in real stacks.
+- Anchor selection is most-specific-first: exact model+GPU → same GPU →
+  same model → all anchors (geometric mean within the tier).
+- Built-in anchors ship in `kvbench.timing.calibration.BUILTIN_ANCHORS`
+  (each carries its citation); add your own measurements with
+  `--anchors my-anchors.yaml` (`timing.anchors_file`) — entries need
+  `model`, `gpu`, `isl`, `osl`, and `ttft_ms` and/or `tpot_ms`.
+- Anchors should be **warm-storage** measurements: kvbench performs its
+  KV storage I/O for real, so the emulated sleep represents compute only.
+
+```bash
+kvbench serve --model llama-3.2-1b --gpu GB10 --calibrated-timing
+kvbench serve --model gpt-oss-120b --gpu B200_SXM --calibrated-timing \
+    --anchors my-anchors.yaml
+```
+
+The `GB10` (DGX Spark) and `STRIX_HALO_CPU` profiles were added with
+measured anchors from the SNIA validation captures, so emulating those
+hosts reproduces their measured TTFT/TPOT at the anchor shape. When no
+anchor is remotely applicable, the strategy falls back to the historical
+default efficiency (0.7) and says so in the log.
+
+One caution for closed-loop benchmarks: calibrated compute time makes the
+emulator *pace like the represented hardware*, which also sets the request
+rate a closed-loop load generator achieves. To reproduce a specific
+deployment's arrival rate exactly, additionally pin the generator
+(e.g. aiperf `--request-rate`).

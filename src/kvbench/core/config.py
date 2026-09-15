@@ -172,6 +172,17 @@ class TimingConfig(BaseModel):
         description="Interconnect bandwidth in GB/s for communication timing "
         "(GPU profile's NVLink bandwidth when unset)",
     )
+    calibrated: bool = Field(
+        default=False,
+        description="Scale the roofline model by measured anchor data "
+        "(lab experiments + published benchmarks) instead of a fixed "
+        "efficiency factor; takes precedence over simple_mode",
+    )
+    anchors_file: str | None = Field(
+        default=None,
+        description="YAML/JSON file of additional timing anchors "
+        "(measured TTFT/TPOT points) merged with the built-ins",
+    )
 
 
 class ServerConfig(BaseModel):
