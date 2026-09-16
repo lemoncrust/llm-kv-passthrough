@@ -1,0 +1,8 @@
+# Timing anchors: AMD Strix Halo (Ryzen AI MAX+ 395), CPU inference.
+
+- model: llama-3.2-1b
+  gpu: STRIX_HALO_CPU
+  isl: 2048
+  osl: 64
+  ttft_ms: 1042.8
+  tpot_ms: 51.4

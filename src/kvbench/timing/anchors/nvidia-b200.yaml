@@ -1,0 +1,7 @@
+# Timing anchors: NVIDIA B200 SXM.
+
+- model: gpt-oss-120b
+  gpu: B200_SXM
+  isl: 1024
+  osl: 1024
+  tpot_ms: 1.0

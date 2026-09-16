@@ -126,8 +126,8 @@ def _load_builtin_anchors() -> tuple[TimingAnchor, ...]:
     """Load the built-in anchors packaged as config files.
 
     Calibration data lives in ``kvbench/timing/anchors/*.yaml`` — one file
-    per source (lab captures, each published benchmark) so new
-    configurations are added by dropping in a file, not by editing code.
+    per accelerator — so new configurations are added by dropping in a
+    file, not by editing code.
     """
     from importlib.resources import files
 

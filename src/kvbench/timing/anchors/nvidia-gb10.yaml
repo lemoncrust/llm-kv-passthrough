@@ -1,0 +1,10 @@
+# Timing anchors: NVIDIA GB10 (DGX Spark).
+# Schema per entry: model, gpu, isl, osl, ttft_ms and/or tpot_ms,
+# optional tp_size (default 1).
+
+- model: llama-3.2-1b
+  gpu: GB10
+  isl: 2048
+  osl: 64
+  ttft_ms: 79.6
+  tpot_ms: 12.5

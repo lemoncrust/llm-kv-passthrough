@@ -185,9 +185,9 @@ are extrapolated to the model × hardware you ask kvbench to represent.
 - Anchor selection is most-specific-first: exact model+GPU → same GPU →
   same model → all anchors (geometric mean within the tier).
 - Calibration data lives in **config files, not code**: the built-in
-  anchors are packaged YAML files under `src/kvbench/timing/anchors/`
-  (one file per source, each entry carrying its citation) — add a
-  configuration by dropping in a file. At runtime, point
+  anchors are packaged YAML files under `src/kvbench/timing/anchors/`,
+  organized one file per accelerator — add a configuration by dropping
+  in a file. At runtime, point
   `--anchors` (`timing.anchors_file`) at an extra YAML/JSON file *or a
   directory of them*; entries need `model`, `gpu`, `isl`, `osl`, and
   `ttft_ms` and/or `tpot_ms`.
