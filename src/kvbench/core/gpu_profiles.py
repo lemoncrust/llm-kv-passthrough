@@ -139,6 +139,16 @@ GPU_PROFILES: dict[str, GPUProfile] = {
         nvlink_bandwidth_gb_s=None,  # single package (NVLink-C2C to CPU only)
         tdp_watts=140,
     ),
+    "STRIX_HALO_IGPU": GPUProfile(
+        name="AMD Radeon 8060S (Strix Halo iGPU, gfx1151)",
+        # Coarse RDNA 3.5 estimate (40 CU); pair with calibrated timing —
+        # a measured anchor exists for this profile.
+        bf16_tflops=30.0,
+        hbm_bandwidth_tb_s=0.256,    # shared 256-bit LPDDR5x-8000 UMA
+        hbm_capacity_gb=128,
+        nvlink_bandwidth_gb_s=None,
+        tdp_watts=120,
+    ),
     "STRIX_HALO_CPU": GPUProfile(
         name="AMD Ryzen AI MAX+ 395 (Strix Halo) - CPU inference",
         # Coarse CPU envelope for emulating CPU-backend serving; pair with

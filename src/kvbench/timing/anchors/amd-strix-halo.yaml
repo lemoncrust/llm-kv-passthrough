@@ -6,3 +6,11 @@
   osl: 64
   ttft_ms: 1042.8
   tpot_ms: 51.4
+
+# iGPU (Radeon 8060S) inference, ROCm/gfx1151.
+- model: llama-3.2-1b
+  gpu: STRIX_HALO_IGPU
+  isl: 2048
+  osl: 64
+  ttft_ms: 1067.2
+  tpot_ms: 16.5
