@@ -93,64 +93,58 @@ class TimingAnchor:
     notes: str = ""
 
 
-# Built-in anchors. Experiment entries are first-party aibench captures
-# (SNIA data-workloads work, 2026-09); published entries cite open
-# benchmark results. Extend or override with timing.anchors_file.
-BUILTIN_ANCHORS: tuple[TimingAnchor, ...] = (
-    TimingAnchor(
-        model="llama-3.2-1b",
-        gpu="GB10",
-        isl=2048,
-        osl=64,
-        ttft_ms=79.6,
-        tpot_ms=12.5,
-        source="experiment",
-        citation="aibench capture gb10-real-llama1b-odirect (2026-09-01), "
-        "vLLM NGC 26.08 + LMCache 0.5.4, concurrency 4",
-        notes="TTFT/TPOT from aiperf averages; ~72% MBU vs GB10 273 GB/s",
-    ),
-    TimingAnchor(
-        model="llama-3.2-1b",
-        gpu="STRIX_HALO_CPU",
-        isl=2048,
-        osl=64,
-        ttft_ms=1042.8,
-        tpot_ms=51.4,
-        source="experiment",
-        citation="aibench capture frame-real-llama1b-mp-odirect (2026-09-01), "
-        "vLLM 0.28.0+cpu + LMCache MP server, concurrency 4",
-        notes="CPU backend; calibrates the CPU-inference profile",
-    ),
-    TimingAnchor(
-        model="gpt-oss-120b",
-        gpu="B200_SXM",
-        isl=1024,
-        osl=1024,
-        ttft_ms=None,
-        tpot_ms=1.0,
-        source="published",
-        citation="SemiAnalysis InferenceX/InferenceMAX + NVIDIA results: "
-        "B200 ~1,000 tok/s/user on gpt-oss with TensorRT-LLM "
-        "(inferencex.semianalysis.com; blogs.nvidia.com/blog/"
-        "blackwell-inferencemax-benchmark-results)",
-        notes="FP4 weights, max-interactivity operating point; decode only",
-    ),
-)
+def _parse_anchor_entries(raw: object, origin: str) -> list[TimingAnchor]:
+    if not isinstance(raw, list):
+        raise ValueError(f"anchors source {origin} must contain a list of anchors")
+    return [TimingAnchor(**entry) for entry in raw]
 
 
-def load_anchors(path: str | Path) -> list[TimingAnchor]:
-    """Load anchors from a YAML or JSON file (a list of anchor mappings)."""
-    p = Path(path)
-    text = p.read_text()
-    if p.suffix.lower() in (".yaml", ".yml"):
+def _load_anchor_file(path: Path) -> list[TimingAnchor]:
+    text = path.read_text()
+    if path.suffix.lower() in (".yaml", ".yml"):
         import yaml
 
         raw = yaml.safe_load(text)
     else:
         raw = json.loads(text)
-    if not isinstance(raw, list):
-        raise ValueError(f"anchors file {p} must contain a list of anchors")
-    return [TimingAnchor(**entry) for entry in raw]
+    return _parse_anchor_entries(raw, str(path))
+
+
+def load_anchors(path: str | Path) -> list[TimingAnchor]:
+    """Load anchors from a YAML/JSON file, or every such file in a directory."""
+    p = Path(path)
+    if p.is_dir():
+        anchors: list[TimingAnchor] = []
+        for f in sorted(p.iterdir()):
+            if f.suffix.lower() in (".yaml", ".yml", ".json"):
+                anchors.extend(_load_anchor_file(f))
+        return anchors
+    return _load_anchor_file(p)
+
+
+def _load_builtin_anchors() -> tuple[TimingAnchor, ...]:
+    """Load the built-in anchors packaged as config files.
+
+    Calibration data lives in ``kvbench/timing/anchors/*.yaml`` — one file
+    per source (lab captures, each published benchmark) so new
+    configurations are added by dropping in a file, not by editing code.
+    """
+    from importlib.resources import files
+
+    anchors: list[TimingAnchor] = []
+    root = files("kvbench.timing") / "anchors"
+    for entry in sorted(root.iterdir(), key=lambda e: e.name):
+        if entry.name.rsplit(".", 1)[-1].lower() in ("yaml", "yml", "json"):
+            import yaml
+
+            raw = yaml.safe_load(entry.read_text())
+            anchors.extend(_parse_anchor_entries(raw, entry.name))
+    return tuple(anchors)
+
+
+# Loaded once at import; extend at runtime with timing.anchors_file
+# (a file or a directory of files).
+BUILTIN_ANCHORS: tuple[TimingAnchor, ...] = _load_builtin_anchors()
 
 
 @dataclass

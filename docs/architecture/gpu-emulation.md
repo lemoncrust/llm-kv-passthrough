@@ -184,10 +184,13 @@ are extrapolated to the model × hardware you ask kvbench to represent.
   independently, since MFU and MBU diverge in real stacks.
 - Anchor selection is most-specific-first: exact model+GPU → same GPU →
   same model → all anchors (geometric mean within the tier).
-- Built-in anchors ship in `kvbench.timing.calibration.BUILTIN_ANCHORS`
-  (each carries its citation); add your own measurements with
-  `--anchors my-anchors.yaml` (`timing.anchors_file`) — entries need
-  `model`, `gpu`, `isl`, `osl`, and `ttft_ms` and/or `tpot_ms`.
+- Calibration data lives in **config files, not code**: the built-in
+  anchors are packaged YAML files under `src/kvbench/timing/anchors/`
+  (one file per source, each entry carrying its citation) — add a
+  configuration by dropping in a file. At runtime, point
+  `--anchors` (`timing.anchors_file`) at an extra YAML/JSON file *or a
+  directory of them*; entries need `model`, `gpu`, `isl`, `osl`, and
+  `ttft_ms` and/or `tpot_ms`.
 - Anchors should be **warm-storage** measurements: kvbench performs its
   KV storage I/O for real, so the emulated sleep represents compute only.
 

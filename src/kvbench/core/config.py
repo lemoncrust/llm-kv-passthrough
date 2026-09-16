@@ -180,7 +180,7 @@ class TimingConfig(BaseModel):
     )
     anchors_file: str | None = Field(
         default=None,
-        description="YAML/JSON file of additional timing anchors "
+        description="YAML/JSON file (or directory of files) of additional timing anchors "
         "(measured TTFT/TPOT points) merged with the built-ins",
     )
 

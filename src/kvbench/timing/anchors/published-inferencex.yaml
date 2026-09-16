@@ -1,0 +1,14 @@
+# Published timing anchors from open benchmark results.
+# SemiAnalysis InferenceX (formerly InferenceMAX): inferencex.semianalysis.com
+
+- model: gpt-oss-120b
+  gpu: B200_SXM
+  isl: 1024
+  osl: 1024
+  tpot_ms: 1.0
+  source: published
+  citation: >-
+    SemiAnalysis InferenceX/InferenceMAX + NVIDIA results: B200 ~1,000
+    tok/s/user on gpt-oss with TensorRT-LLM (inferencex.semianalysis.com;
+    blogs.nvidia.com/blog/blackwell-inferencemax-benchmark-results)
+  notes: "FP4 weights, max-interactivity operating point; decode only"

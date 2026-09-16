@@ -74,7 +74,7 @@ def serve(
     anchors_file: str | None = typer.Option(
         None,
         "--anchors",
-        help="YAML/JSON file of extra timing anchors (measured TTFT/TPOT)",
+        help="YAML/JSON file or directory of extra timing anchors (measured TTFT/TPOT)",
     ),
     prefill_ms_per_token: float | None = typer.Option(
         None,

@@ -1,0 +1,30 @@
+# First-party measured timing anchors from the SNIA data-workloads aibench
+# captures (2026-09-01). One file per source; every *.yaml/*.json in this
+# directory is loaded as built-in calibration data.
+#
+# Required keys: model, gpu, isl, osl, and ttft_ms and/or tpot_ms.
+# Optional: tp_size (default 1), source, citation, notes.
+
+- model: llama-3.2-1b
+  gpu: GB10
+  isl: 2048
+  osl: 64
+  ttft_ms: 79.6
+  tpot_ms: 12.5
+  source: experiment
+  citation: >-
+    aibench capture gb10-real-llama1b-odirect (2026-09-01),
+    vLLM NGC 26.08 + LMCache 0.5.4, concurrency 4
+  notes: "TTFT/TPOT from aiperf averages; ~72% MBU vs GB10 273 GB/s"
+
+- model: llama-3.2-1b
+  gpu: STRIX_HALO_CPU
+  isl: 2048
+  osl: 64
+  ttft_ms: 1042.8
+  tpot_ms: 51.4
+  source: experiment
+  citation: >-
+    aibench capture frame-real-llama1b-mp-odirect (2026-09-01),
+    vLLM 0.28.0+cpu + LMCache MP server, concurrency 4
+  notes: "CPU backend; calibrates the CPU-inference profile"
