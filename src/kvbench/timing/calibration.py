@@ -91,6 +91,10 @@ class TimingAnchor:
     source: str = "experiment"
     citation: str = ""
     notes: str = ""
+    # Tokens of the prompt that were already cached when TTFT was measured
+    # (agentic / multi-turn traffic): prefill covered only isl - cached_tokens
+    # new tokens, attending to the cached prefix.
+    cached_tokens: int = 0
 
 
 def _parse_anchor_entries(raw: object, origin: str) -> list[TimingAnchor]:
@@ -244,7 +248,8 @@ class CalibratedTimingStrategy(TimingStrategy):
                 continue
             pf = df = None
             if a.ttft_ms is not None:
-                pred = backbone.prefill_latency(a.isl).total_ms
+                new_tokens = max(a.isl - a.cached_tokens, 1)
+                pred = backbone.prefill_latency(new_tokens, context_tokens=a.cached_tokens).total_ms
                 if pred > 0:
                     pf = min(max(a.ttft_ms / pred, MIN_SCALE), MAX_SCALE)
             if a.tpot_ms is not None:
@@ -255,11 +260,27 @@ class CalibratedTimingStrategy(TimingStrategy):
                 scored.append(_AnchorScale(a, pf, df))
         return scored
 
-    def _select_scale(self, kind: str) -> tuple[float, str]:
-        """Pick the calibration scale from the most specific anchor tier."""
+    # Anchors whose ISL is within this factor of the request's context are
+    # preferred inside a tier (a 2k-token chat anchor should not calibrate an
+    # 80k-token agentic turn when an 80k anchor exists, and vice versa).
+    ISL_WINDOW = 2.0
+
+    def _select_scale(self, kind: str, isl: int | None = None) -> tuple[float, str]:
+        """Pick the calibration scale from the most specific anchor tier.
+
+        When ``isl`` is given, anchors within ISL_WINDOW of it are preferred
+        inside each tier; a tier with no such anchors falls back to all of its
+        anchors.
+        """
 
         def usable(s: _AnchorScale) -> float | None:
             return s.prefill_scale if kind == "prefill" else s.decode_scale
+
+        def near(s: _AnchorScale) -> bool:
+            if not isl:
+                return True
+            r = s.anchor.isl / max(isl, 1)
+            return 1.0 / self.ISL_WINDOW <= r <= self.ISL_WINDOW
 
         tiers: list[tuple[str, list[float]]] = []
         exact = [
@@ -297,6 +318,20 @@ class CalibratedTimingStrategy(TimingStrategy):
             ("same-model anchors", same_model),
             (f"all {my_class}-class anchors", same_class),
         ]
+        # Re-derive each tier with the ISL preference applied
+        def tier_values(pred) -> list[float]:
+            cands = [s for s in self._scored if usable(s) is not None and pred(s)]
+            close = [s for s in cands if near(s)]
+            chosen = close or cands
+            return [usable(s) for s in chosen]
+
+        my_class = _hardware_class(self._gpu_name)
+        tiers = [
+            ("exact model+gpu anchor", tier_values(lambda s: s.anchor.model == self._model_name and s.anchor.gpu == self._gpu_name)),
+            ("same-gpu anchors", tier_values(lambda s: s.anchor.gpu == self._gpu_name)),
+            ("same-model anchors", tier_values(lambda s: s.anchor.model == self._model_name and _hardware_class(s.anchor.gpu) == my_class)),
+            (f"all {my_class}-class anchors", tier_values(lambda s: _hardware_class(s.anchor.gpu) == my_class)),
+        ]
         for name, values in tiers:
             if values:
                 return _geomean(values), name
@@ -314,17 +349,27 @@ class CalibratedTimingStrategy(TimingStrategy):
             is_compute_bound=result.is_compute_bound,
         )
 
+    def _scale_for(self, kind: str, isl: int) -> tuple[float, str]:
+        """ISL-aware scale, memoized per power-of-two ISL bucket."""
+        cache = self.__dict__.setdefault("_scale_cache", {})
+        bucket = (kind, max(isl, 1).bit_length())
+        if bucket not in cache:
+            cache[bucket] = self._select_scale(kind, isl=isl)
+        return cache[bucket]
+
     def prefill_latency(
         self, num_tokens: int, batch_size: int = 1, context_tokens: int = 0
     ) -> TimingResult:
         base = self._backbone.prefill_latency(
             num_tokens, batch_size=batch_size, context_tokens=context_tokens
         )
-        return self._apply(base, self.prefill_scale, self._prefill_tier)
+        scale, tier = self._scale_for("prefill", num_tokens + context_tokens)
+        return self._apply(base, scale, tier)
 
     def decode_latency(self, context_length: int, batch_size: int = 1) -> TimingResult:
         base = self._backbone.decode_latency(context_length, batch_size=batch_size)
-        return self._apply(base, self.decode_scale, self._decode_tier)
+        scale, tier = self._scale_for("decode", context_length)
+        return self._apply(base, scale, tier)
 
     def __repr__(self) -> str:
         return (
