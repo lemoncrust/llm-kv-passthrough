@@ -76,6 +76,12 @@ def serve(
         "--anchors",
         help="YAML/JSON file or directory of extra timing anchors (measured TTFT/TPOT)",
     ),
+    full_speed: bool | None = typer.Option(
+        None,
+        "--full-speed",
+        help="Skip the emulated GPU sleeps (serve as fast as the KV stack allows) "
+        "and report effective TTFT / tokens per second for the emulated model on /metrics",
+    ),
     prefill_ms_per_token: float | None = typer.Option(
         None,
         "--prefill-ms-per-token",
@@ -136,6 +142,7 @@ def serve(
             "simple_mode": simple_timing,
             "calibrated": calibrated_timing,
             "anchors_file": anchors_file,
+            "full_speed": full_speed,
             "prefill_ms_per_token": prefill_ms_per_token,
             "decode_ms_per_token": decode_ms_per_token,
             "pp_size": pp_size,
@@ -168,6 +175,8 @@ def serve(
     )
     console.print(f"  Model: {cfg.server.model_profile}")
     console.print(f"  GPU: {cfg.gpu.gpu_profile}")
+    if cfg.timing.full_speed:
+        console.print("  Timing: FULL SPEED (no GPU sleeps; effective TTFT/tok/s on /metrics)")
     if cfg.timing.simple_mode:
         console.print(
             f"  Timing: simple ({cfg.timing.prefill_ms_per_token} ms/token prefill, "

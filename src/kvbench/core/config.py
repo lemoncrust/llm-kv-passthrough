@@ -183,6 +183,12 @@ class TimingConfig(BaseModel):
         description="YAML/JSON file (or directory of files) of additional timing anchors "
         "(measured TTFT/TPOT points) merged with the built-ins",
     )
+    full_speed: bool = Field(
+        default=False,
+        description="Do not sleep for emulated GPU time: serve every request as fast "
+        "as the KV stack allows, while still computing the emulated latency so the "
+        "server can report effective TTFT and tokens/s for the emulated model and GPU",
+    )
 
 
 class ServerConfig(BaseModel):

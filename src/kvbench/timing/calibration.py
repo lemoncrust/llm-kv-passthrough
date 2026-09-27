@@ -156,6 +156,17 @@ class _AnchorScale:
     decode_scale: float | None
 
 
+def _hardware_class(gpu_name: str) -> str:
+    """Coarse hardware class for anchor fallback: 'datacenter' (HBM-class
+    bandwidth, >= 1 TB/s) or 'client' (unified-memory parts, CPUs, iGPUs)."""
+    from kvbench.core.gpu_profiles import get_gpu_profile
+
+    try:
+        return "datacenter" if get_gpu_profile(gpu_name).hbm_bandwidth_tb_s >= 1.0 else "client"
+    except KeyError:
+        return "unknown"
+
+
 def _geomean(values: list[float]) -> float:
     return math.exp(sum(math.log(v) for v in values) / len(values))
 
@@ -266,14 +277,25 @@ class CalibratedTimingStrategy(TimingStrategy):
         same_model = [
             v
             for s in self._scored
-            if (v := usable(s)) is not None and s.anchor.model == self._model_name
+            if (v := usable(s)) is not None
+            and s.anchor.model == self._model_name
+            and _hardware_class(s.anchor.gpu) == _hardware_class(self._gpu_name)
         ]
-        everything = [v for s in self._scored if (v := usable(s)) is not None]
+        # Cross-hardware fallback stays within the same hardware class, so a
+        # datacenter GPU is never calibrated from a CPU or iGPU anchor whose
+        # measured/roofline ratio is two orders of magnitude off (and vice
+        # versa).
+        my_class = _hardware_class(self._gpu_name)
+        same_class = [
+            v
+            for s in self._scored
+            if (v := usable(s)) is not None and _hardware_class(s.anchor.gpu) == my_class
+        ]
         tiers = [
             ("exact model+gpu anchor", exact),
             ("same-gpu anchors", same_gpu),
             ("same-model anchors", same_model),
-            ("all anchors", everything),
+            (f"all {my_class}-class anchors", same_class),
         ]
         for name, values in tiers:
             if values:

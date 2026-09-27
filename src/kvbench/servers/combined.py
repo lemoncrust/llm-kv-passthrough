@@ -30,6 +30,7 @@ from kvbench.servers.openai_compat import (
     ModelList,
 )
 from kvbench.timing import create_timing_strategy
+from kvbench.timing.fullspeed import emulated_ms
 
 if TYPE_CHECKING:
     from kvbench.core.config import KVBenchConfig
@@ -63,11 +64,48 @@ class CombinedStats:
     cache_misses: int = 0
     total_latency_ms: float = 0.0
     start_time: float = field(default_factory=time.time)
+    # Emulated (model x GPU) time, independent of how long the server actually
+    # slept. In full-speed mode this is the only record of the emulated
+    # hardware's speed; in normal mode it equals the slept time.
+    emulated_prefill_ms: float = 0.0
+    emulated_decode_ms: float = 0.0
+    emulated_ttft_ms: float = 0.0       # sum over requests of prefill + first decode step
+    completed_with_ttft: int = 0
+    wall_serving_ms: float = 0.0        # actual wall time spent inside requests
 
     @property
     def total_tokens(self) -> int:
         """Total tokens processed."""
         return self.prompt_tokens + self.completion_tokens
+
+    @property
+    def effective_ttft_ms(self) -> float:
+        """Mean emulated time to first token per completed request."""
+        if self.completed_with_ttft == 0:
+            return 0.0
+        return self.emulated_ttft_ms / self.completed_with_ttft
+
+    @property
+    def effective_tokens_per_s(self) -> float:
+        """Completion tokens per second of emulated (prefill + decode) time."""
+        total_ms = self.emulated_prefill_ms + self.emulated_decode_ms
+        if total_ms <= 0:
+            return 0.0
+        return self.completion_tokens / (total_ms / 1000.0)
+
+    @property
+    def effective_decode_tokens_per_s(self) -> float:
+        """Completion tokens per second of emulated decode time only (1000 / mean TPOT)."""
+        if self.emulated_decode_ms <= 0:
+            return 0.0
+        return self.completion_tokens / (self.emulated_decode_ms / 1000.0)
+
+    @property
+    def actual_tokens_per_s(self) -> float:
+        """Completion tokens per second of wall time actually spent serving."""
+        if self.wall_serving_ms <= 0:
+            return 0.0
+        return self.completion_tokens / (self.wall_serving_ms / 1000.0)
 
     @property
     def avg_latency_ms(self) -> float:
@@ -104,6 +142,7 @@ class CombinedServer:
         self.kv = kv
         self.stats = CombinedStats()
         self._running = False
+        self._request_ttft_ms = 0.0
 
         self.chunk_size = kv.chunk_size
         self.processor = TokenProcessor(chunk_size=self.chunk_size)
@@ -124,12 +163,17 @@ class CombinedServer:
         return self.processor.simulate_tokenize(text)
 
     def _calculate_prefill_latency_ms(self, num_tokens: int, context_tokens: int = 0) -> float:
-        """Calculate prefill latency using the configured timing strategy."""
-        return self.timing.prefill_latency(num_tokens, context_tokens=context_tokens).total_ms
+        """Prefill latency to sleep (ms); records the emulated time in the stats."""
+        result = self.timing.prefill_latency(num_tokens, context_tokens=context_tokens)
+        self.stats.emulated_prefill_ms += emulated_ms(result)
+        self._request_ttft_ms += emulated_ms(result)
+        return result.total_ms
 
     def _calculate_decode_latency_ms(self, context_length: int) -> float:
-        """Calculate decode latency per token using the configured timing strategy."""
-        return self.timing.decode_latency(context_length).total_ms
+        """Decode latency per token to sleep (ms); records the emulated time in the stats."""
+        result = self.timing.decode_latency(context_length)
+        self.stats.emulated_decode_ms += emulated_ms(result)
+        return result.total_ms
 
     def _generate_mock_token(self, position: int) -> str:
         """Generate a mock token."""
@@ -242,6 +286,7 @@ class CombinedServer:
         self.stats.requests_total += 1
         start_time = time.time()
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
+        self._request_ttft_ms = 0.0
 
         try:
             # Prefill phase
@@ -264,7 +309,10 @@ class CombinedServer:
             tokens_generated = 0
 
             for i in range(max_tokens):
+                emu_before = self.stats.emulated_decode_ms
                 latency_ms = self._calculate_decode_latency_ms(context_length + i)
+                if i == 0:
+                    self._request_ttft_ms += self.stats.emulated_decode_ms - emu_before
                 await asyncio.sleep(latency_ms / 1000)
 
                 token = self._generate_mock_token(i)
@@ -290,6 +338,9 @@ class CombinedServer:
             elapsed_ms = (time.time() - start_time) * 1000
             self.stats.completion_tokens += tokens_generated
             self.stats.total_latency_ms += elapsed_ms
+            self.stats.wall_serving_ms += elapsed_ms
+            self.stats.emulated_ttft_ms += self._request_ttft_ms
+            self.stats.completed_with_ttft += 1
             self.stats.requests_success += 1
 
         except Exception as e:
@@ -312,6 +363,7 @@ class CombinedServer:
         """
         self.stats.requests_total += 1
         start_time = time.time()
+        self._request_ttft_ms = 0.0
 
         try:
             # Prefill phase
@@ -328,7 +380,10 @@ class CombinedServer:
             tokens_generated = 0
 
             for i in range(max_tokens):
+                emu_before = self.stats.emulated_decode_ms
                 latency_ms = self._calculate_decode_latency_ms(context_length + i)
+                if i == 0:
+                    self._request_ttft_ms += self.stats.emulated_decode_ms - emu_before
                 await asyncio.sleep(latency_ms / 1000)
 
                 token = self._generate_mock_token(i)
@@ -339,6 +394,9 @@ class CombinedServer:
             elapsed_ms = (time.time() - start_time) * 1000
             self.stats.completion_tokens += tokens_generated
             self.stats.total_latency_ms += elapsed_ms
+            self.stats.wall_serving_ms += elapsed_ms
+            self.stats.emulated_ttft_ms += self._request_ttft_ms
+            self.stats.completed_with_ttft += 1
             self.stats.requests_success += 1
 
             return ChatCompletionResponse.create(
@@ -386,6 +444,15 @@ class CombinedServer:
             cache_hits=self.stats.cache_hits,
             cache_misses=self.stats.cache_misses,
             avg_latency_ms=self.stats.avg_latency_ms,
+            timing_mode="full-speed" if self.config.timing.full_speed else "emulated",
+            emulated_model=self.model_name,
+            emulated_gpu=f"{self.config.gpu.gpu_profile} x TP{self.config.gpu.tp_size}",
+            effective_ttft_ms=self.stats.effective_ttft_ms,
+            effective_tokens_per_s=self.stats.effective_tokens_per_s,
+            effective_decode_tokens_per_s=self.stats.effective_decode_tokens_per_s,
+            actual_tokens_per_s=self.stats.actual_tokens_per_s,
+            emulated_prefill_ms=self.stats.emulated_prefill_ms,
+            emulated_decode_ms=self.stats.emulated_decode_ms,
         )
 
     async def start(self) -> None:
@@ -396,7 +463,17 @@ class CombinedServer:
     async def stop(self) -> None:
         """Stop the server (the KV stack's lifecycle is owned by the app)."""
         self._running = False
-        logger.info(f"Combined server {self.instance_id} stopped")
+        st = self.stats
+        logger.info(
+            "Combined server %s stopped: %d requests, %d completion tokens; "
+            "effective TTFT %.1f ms, effective %.1f tok/s (decode-only %.1f tok/s), "
+            "actual %.1f tok/s [%s, %s on %s TP%d]",
+            self.instance_id, st.requests_success, st.completion_tokens,
+            st.effective_ttft_ms, st.effective_tokens_per_s, st.effective_decode_tokens_per_s,
+            st.actual_tokens_per_s,
+            "full-speed" if self.config.timing.full_speed else "emulated",
+            self.model_name, self.config.gpu.gpu_profile, self.config.gpu.tp_size,
+        )
 
     def __repr__(self) -> str:
         """Return string representation."""

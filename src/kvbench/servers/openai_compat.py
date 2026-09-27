@@ -458,3 +458,13 @@ class MetricsResponse(BaseModel):
     cache_hits: int
     cache_misses: int
     avg_latency_ms: float
+    # Emulated-hardware effectiveness (see kvbench.timing.fullspeed)
+    timing_mode: str | None = None
+    emulated_model: str | None = None
+    emulated_gpu: str | None = None
+    effective_ttft_ms: float | None = None
+    effective_tokens_per_s: float | None = None
+    effective_decode_tokens_per_s: float | None = None
+    actual_tokens_per_s: float | None = None
+    emulated_prefill_ms: float | None = None
+    emulated_decode_ms: float | None = None
