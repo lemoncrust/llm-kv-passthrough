@@ -299,6 +299,23 @@ MODEL_PROFILES: dict[str, ModelProfile] = {
         # planning for full weights must use the total separately.
         params_billions_override=5.1,
     ),
+    "gpt-oss-20b": ModelProfile(
+        name="GPT-OSS 20B (MoE, 3.6B active)",
+        layers=24,
+        hidden=2880,
+        kv_heads=8,
+        num_heads=64,
+        head_dim_override=64,
+        intermediate=2880,
+        vocab_size=201088,
+        max_seq_len=131072,
+        dtype="fp8",  # MXFP4 serving point, fp8 is the closest supported dtype
+        # 20.9B total / ~3.6B active per token. Half the layers use a 128-token
+        # sliding window; vLLM still allocates full per-token KV for them
+        # unless the hybrid allocator is on, so LMCache sees KV for all 24
+        # layers: 2 x 8 x 64 x 1 B x 24 = 24 KiB/token at fp8.
+        params_billions_override=3.6,
+    ),
     "qwen-2.5-7b": ModelProfile(
         name="Qwen 2.5 7B",
         layers=28,
