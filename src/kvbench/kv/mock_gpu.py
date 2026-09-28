@@ -147,7 +147,18 @@ class MockGPUConnector(GPUConnectorInterface):
             return torch.empty((2, self.num_layers, num_tokens, self.hidden_dim), dtype=self.dtype)
         return buf[:, :, :num_tokens, :]
 
+    # Retrieve-side copy into the stand-in GPU tensor. Off by default: the
+    # bytes are never used, the serving engine's load time is modelled by the
+    # batching engine (kv_load_gb_s), and a CPU memcpy of a 2-3 GB prefix
+    # (~0.2 s) held LMCache's CPU-tier objects pinned ~7x longer than the
+    # real GB10's unified-memory copy (~30 ms), which changed which chunks the
+    # 8 GB tier could evict. LMCache still reads every chunk from its tier
+    # (disk reads included) before handing it to the connector.
+    copy_on_retrieve: bool = False
+
     def to_gpu(self, memory_obj: MemoryObj, start: int, end: int, **kwargs) -> None:
+        if not self.copy_on_retrieve:
+            return
         kv_dest: torch.Tensor = kwargs["kv_dest"]
         kv_dest[:, :, start:end, :] = memory_obj.tensor
 

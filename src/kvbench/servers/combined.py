@@ -339,7 +339,7 @@ class CombinedServer:
             self.stats.completed_with_ttft += 1
             store_end = (num_tokens // self.chunk_size) * self.chunk_size
             if miss_tokens and store_end > hit_tokens:
-                store_task = asyncio.create_task(self.kv.store(tokens[:store_end], skip_leading=hit_tokens))
+                store_task = asyncio.create_task(self._store_stepwise(tokens, hit_tokens, store_end))
             self.hot.insert(tokens, max(hit_tokens, store_end if miss_tokens else 0) // self.chunk_size)
             yield 0, self._generate_mock_token(0)
             for i in range(1, max_tokens):
@@ -362,6 +362,17 @@ class CombinedServer:
                 # Let an in-flight store finish in the background; never leak an
                 # unawaited failure.
                 store_task.add_done_callback(lambda t: t.exception())
+
+    async def _store_stepwise(self, tokens: list[int], start: int, end: int) -> None:
+        """Store new chunks in engine-step-sized pieces, as vLLM's connector
+        saves the KV computed in each chunked-prefill step (at most the token
+        budget per step), instead of one allocation for the whole turn."""
+        step = max(self.chunk_size, (self.engine.token_budget // self.chunk_size) * self.chunk_size) if self.engine else end
+        pos = start
+        while pos < end:
+            nxt = min(end, ((pos // self.chunk_size) * self.chunk_size) + step)
+            await self.kv.store(tokens[:nxt], skip_leading=pos)
+            pos = nxt
 
     async def _process_prefill(self, prompt: str) -> tuple[int, int, int]:
         """Process prefill phase.
