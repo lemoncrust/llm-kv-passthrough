@@ -20,7 +20,7 @@
   cached_tokens: 73564
   osl: 371
   ttft_ms: 811.2   # fitted: 1274 ms mean TTFT x 0.637 so the emulated matched-turn mean reproduces the real capture
-  tpot_ms: 30.6    # fitted: token-weighted ITL (sum(latency-TTFT)/sum(OSL)) x 0.422
+  tpot_ms: 52.2    # fitted: whole-run token-weighted ITL 53.3 ms (sum(latency-TTFT)/sum(OSL)) x 0.98 (emulated/anchor ratio observed); the first 43 turns alone give 31 ms, later turns cost more per token
   source: experiment
   citation: "aibench-lab results 9b7d23b0 (aiperf profile_export), 2026-09-27"
 
@@ -30,6 +30,6 @@
   cached_tokens: 75841
   osl: 373
   ttft_ms: 10291.3   # real mean TTFT 16162 ms x 0.637 (same shape correction as the Llama pair)
-  tpot_ms: 12.7    # token-weighted ITL 30.0 ms x 0.422
+  tpot_ms: 29.4    # whole-run token-weighted ITL 30.0 ms x 0.98; TTFT includes the hidden reasoning phase, which is what the storage sees as turn time
   source: experiment
   citation: "aibench-lab results fe575eff (aiperf profile_export), 2026-09-27; gb10-real-agentx-gptoss20b-20m-cpu8g"
