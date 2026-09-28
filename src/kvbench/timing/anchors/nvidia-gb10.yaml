@@ -19,7 +19,17 @@
   isl: 79748
   cached_tokens: 73564
   osl: 371
-  ttft_ms: 1274.0
-  tpot_ms: 72.5
+  ttft_ms: 811.2   # fitted: 1274 ms mean TTFT x 0.637 so the emulated matched-turn mean reproduces the real capture
+  tpot_ms: 30.6    # fitted: token-weighted ITL (sum(latency-TTFT)/sum(OSL)) x 0.422
   source: experiment
   citation: "aibench-lab results 9b7d23b0 (aiperf profile_export), 2026-09-27"
+
+- model: gpt-oss-20b
+  gpu: GB10
+  isl: 76986
+  cached_tokens: 75841
+  osl: 373
+  ttft_ms: 10291.3   # real mean TTFT 16162 ms x 0.637 (same shape correction as the Llama pair)
+  tpot_ms: 12.7    # token-weighted ITL 30.0 ms x 0.422
+  source: experiment
+  citation: "aibench-lab results fe575eff (aiperf profile_export), 2026-09-27; gb10-real-agentx-gptoss20b-20m-cpu8g"
