@@ -82,6 +82,12 @@ def serve(
         help="Skip the emulated GPU sleeps (serve as fast as the KV stack allows) "
         "and report effective TTFT / tokens per second for the emulated model on /metrics",
     ),
+    hot_kv_gb: float | None = typer.Option(
+        None,
+        "--hot-kv-gb",
+        help="Host-resident hot set of KV chunks in GB (default: the LMCache local CPU "
+        "tier size; 0 disables it)",
+    ),
     prefill_ms_per_token: float | None = typer.Option(
         None,
         "--prefill-ms-per-token",
@@ -143,6 +149,7 @@ def serve(
             "calibrated": calibrated_timing,
             "anchors_file": anchors_file,
             "full_speed": full_speed,
+            "hot_kv_gb": hot_kv_gb,
             "prefill_ms_per_token": prefill_ms_per_token,
             "decode_ms_per_token": decode_ms_per_token,
             "pp_size": pp_size,

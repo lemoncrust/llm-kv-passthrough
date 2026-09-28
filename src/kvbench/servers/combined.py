@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from kvbench.core.tokens import TokenProcessor
+from kvbench.servers.hotset import HotKVSet
 from kvbench.servers.openai_compat import (
     ChatCompletionChunk,
     ChatCompletionRequest,
@@ -72,6 +73,7 @@ class CombinedStats:
     emulated_ttft_ms: float = 0.0       # sum over requests of prefill + first decode step
     completed_with_ttft: int = 0
     wall_serving_ms: float = 0.0        # actual wall time spent inside requests
+    hot_tokens: int = 0                 # cached-prefix tokens served from the host-resident hot set
 
     @property
     def total_tokens(self) -> int:
@@ -147,6 +149,18 @@ class CombinedServer:
         self.chunk_size = kv.chunk_size
         self.processor = TokenProcessor(chunk_size=self.chunk_size)
         self.timing = create_timing_strategy(config)
+        # Host-resident hot set (see hotset.py): default capacity = the KV
+        # stack's local CPU tier, the memory the real serving stack keeps
+        # session prefixes in between turns.
+        try:
+            cap = kv.capacity_info() if hasattr(kv, "capacity_info") else {}
+        except Exception:  # stack not started (tests) or no tier info
+            cap = {}
+        hot_gb = config.timing.hot_kv_gb
+        hot_bytes = int(hot_gb * (1 << 30)) if hot_gb is not None else int(cap.get("local_cpu_capacity_bytes") or 0)
+        self.hot = HotKVSet(hot_bytes, self.chunk_size, int(cap.get("chunk_bytes") or 0))
+        if self.hot.enabled:
+            logger.info("Hot KV set enabled: %.1f GB (%d-token chunks of %d bytes)", hot_bytes / (1 << 30), self.chunk_size, self.hot.chunk_bytes)
 
     @property
     def model_name(self) -> str:
@@ -245,10 +259,20 @@ class CombinedServer:
         # Ask the KV stack how much of the sequence is already cached
         hit_tokens = await self.kv.lookup(tokens)
         if hit_tokens:
-            # Read the cached prefix through the stack (the storage read path)
-            await self.kv.retrieve(tokens[:hit_tokens])
+            # The part of the cached prefix still host-resident from this
+            # session's previous turns is not re-read; the rest is read
+            # through the stack (the storage read path).
+            hot_tokens = self.hot.resident_prefix_chunks(tokens, hit_tokens // self.chunk_size) * self.chunk_size
+            self.stats.hot_tokens += hot_tokens
+            if hot_tokens >= hit_tokens:
+                pass
+            elif hot_tokens > 0:
+                await self.kv.retrieve(tokens[:hit_tokens], skip_leading=hot_tokens)
+            else:
+                await self.kv.retrieve(tokens[:hit_tokens])
 
         miss_tokens = num_tokens - hit_tokens
+        store_end = (num_tokens // self.chunk_size) * self.chunk_size
         if miss_tokens:
             # Simulate prefill compute for the uncached suffix, which
             # attends to the cached prefix
@@ -262,9 +286,10 @@ class CombinedServer:
             # stored (save_unfull_chunk=False / discard_partial_chunks), and
             # when the prompt is fully covered by the hit no store op is
             # emitted at all (vllm_v1_adapter skip rule).
-            store_end = (num_tokens // self.chunk_size) * self.chunk_size
             if store_end > hit_tokens:
                 await self.kv.store(tokens[:store_end], skip_leading=hit_tokens)
+        # Everything this turn touched (retrieved or stored) is now host-resident
+        self.hot.insert(tokens, max(hit_tokens, store_end if miss_tokens else 0) // self.chunk_size)
 
         cache_hits = hit_tokens // self.chunk_size
         cache_misses = (miss_tokens + self.chunk_size - 1) // self.chunk_size
@@ -465,10 +490,10 @@ class CombinedServer:
         self._running = False
         st = self.stats
         logger.info(
-            "Combined server %s stopped: %d requests, %d completion tokens; "
+            "Combined server %s stopped (hot set: %s): %d requests, %d completion tokens; "
             "effective TTFT %.1f ms, effective %.1f tok/s (decode-only %.1f tok/s), "
             "actual %.1f tok/s [%s, %s on %s TP%d]",
-            self.instance_id, st.requests_success, st.completion_tokens,
+            self.instance_id, self.hot.info(), st.requests_success, st.completion_tokens,
             st.effective_ttft_ms, st.effective_tokens_per_s, st.effective_decode_tokens_per_s,
             st.actual_tokens_per_s,
             "full-speed" if self.config.timing.full_speed else "emulated",

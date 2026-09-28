@@ -89,7 +89,7 @@ class KVStack(abc.ABC):
         """
 
     @abc.abstractmethod
-    async def retrieve(self, tokens: list[int]) -> int:
+    async def retrieve(self, tokens: list[int], skip_leading: int = 0) -> int:
         """Read cached KV data for a token sequence (the read path).
 
         Args:

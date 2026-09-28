@@ -189,6 +189,12 @@ class TimingConfig(BaseModel):
         "as the KV stack allows, while still computing the emulated latency so the "
         "server can report effective TTFT and tokens/s for the emulated model and GPU",
     )
+    hot_kv_gb: float | None = Field(
+        default=None,
+        description="Host-resident hot set of KV chunks (GB) that a returning session does "
+        "not re-read from the KV stack, modelling the serving stack's CPU-tier retention; "
+        "None = the KV stack's local CPU tier size, 0 = disabled",
+    )
 
 
 class ServerConfig(BaseModel):

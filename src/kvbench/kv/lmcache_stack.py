@@ -234,12 +234,12 @@ class LMCacheStack(KVStack):
         kv_source = connector.new_kv_tensor(len(tokens))
         engine.store(torch.tensor(tokens, dtype=torch.int64), mask=mask, kv_source=kv_source)
 
-    async def retrieve(self, tokens: list[int]) -> int:
+    async def retrieve(self, tokens: list[int], skip_leading: int = 0) -> int:
         self._require_engine()
         try:
             results = await asyncio.gather(
                 *(
-                    asyncio.to_thread(self._retrieve_sync, engine, connector, tokens)
+                    asyncio.to_thread(self._retrieve_sync, engine, connector, tokens, skip_leading)
                     for engine, connector in zip(self._engines, self._connectors)
                 )
             )
@@ -251,11 +251,20 @@ class LMCacheStack(KVStack):
         self.stats.retrieved_tokens += retrieved
         return retrieved
 
-    def _retrieve_sync(self, engine: Any, connector: Any, tokens: list[int]) -> int:
+    def _retrieve_sync(
+        self, engine: Any, connector: Any, tokens: list[int], skip_leading: int = 0
+    ) -> int:
         import torch
 
+        mask = None
+        if skip_leading > 0:
+            # Leading tokens are host-resident (HotKVSet): only the rest is
+            # read through the stack, as the real connector does for tokens
+            # its serving engine already holds.
+            mask = torch.ones(len(tokens), dtype=torch.bool)
+            mask[:skip_leading] = False
         kv_dest = connector.new_kv_tensor(len(tokens))
-        ret_mask = engine.retrieve(torch.tensor(tokens, dtype=torch.int64), kv_dest=kv_dest)
+        ret_mask = engine.retrieve(torch.tensor(tokens, dtype=torch.int64), mask=mask, kv_dest=kv_dest)
         return int(ret_mask.sum())
 
     def capacity_info(self) -> dict[str, Any]:
