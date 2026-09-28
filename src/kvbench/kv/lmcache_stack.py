@@ -231,7 +231,7 @@ class LMCacheStack(KVStack):
         if skip_leading > 0:
             mask = torch.ones(len(tokens), dtype=torch.bool)
             mask[:skip_leading] = False
-        kv_source = connector.new_kv_tensor(len(tokens))
+        kv_source = connector.source_view(len(tokens)) if hasattr(connector, "source_view") else connector.new_kv_tensor(len(tokens))
         engine.store(torch.tensor(tokens, dtype=torch.int64), mask=mask, kv_source=kv_source)
 
     async def retrieve(self, tokens: list[int], skip_leading: int = 0) -> int:
@@ -263,7 +263,7 @@ class LMCacheStack(KVStack):
             # its serving engine already holds.
             mask = torch.ones(len(tokens), dtype=torch.bool)
             mask[:skip_leading] = False
-        kv_dest = connector.new_kv_tensor(len(tokens))
+        kv_dest = connector.dest_view(len(tokens)) if hasattr(connector, "dest_view") else connector.new_kv_tensor(len(tokens))
         ret_mask = engine.retrieve(torch.tensor(tokens, dtype=torch.int64), mask=mask, kv_dest=kv_dest)
         return int(ret_mask.sum())
 

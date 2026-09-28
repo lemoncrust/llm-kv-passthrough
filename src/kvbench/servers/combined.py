@@ -266,7 +266,13 @@ class CombinedServer:
             await self._retrieve_prefix(tokens, hit_tokens)
         return tokens, hit_tokens
 
-    async def _retrieve_prefix(self, tokens: list[int], hit_tokens: int) -> None:
+    async def _retrieve_prefix(self, tokens: list[int], hit_tokens: int) -> float:
+        """Read the cached prefix through the KV stack; returns elapsed ms."""
+        t = time.monotonic()
+        await self._retrieve_prefix_inner(tokens, hit_tokens)
+        return (time.monotonic() - t) * 1e3
+
+    async def _retrieve_prefix_inner(self, tokens: list[int], hit_tokens: int) -> None:
         hot_tokens = self.hot.resident_prefix_chunks(tokens, hit_tokens // self.chunk_size) * self.chunk_size
         self.stats.hot_tokens += hot_tokens
         if hot_tokens >= hit_tokens:
@@ -290,8 +296,11 @@ class CombinedServer:
         t_tok = time.monotonic()
         hit_tokens = await self.kv.lookup(tokens)
         t_look = time.monotonic()
-        if hit_tokens:
-            await self._retrieve_prefix(tokens, hit_tokens)
+        # The cached prefix is read through the KV stack for real, but the
+        # emulator's copy (a CPU memcpy standing in for the engine's load)
+        # overlaps the modelled front-end and engine time instead of adding
+        # to it: the first token waits for whichever finishes last.
+        ret_task = asyncio.create_task(self._retrieve_prefix(tokens, hit_tokens)) if hit_tokens else None
         t_ret = time.monotonic()
         num_tokens = len(tokens)
         miss_tokens = num_tokens - hit_tokens
@@ -312,12 +321,16 @@ class CombinedServer:
         rec = None
         try:
             await seq.queue.get()
+            retrieve_ms = 0.0
+            if ret_task is not None:
+                retrieve_ms = await ret_task
+                ret_task = None
             t_first = time.monotonic()
             ttft_ms = (t_first - t0) * 1000.0
             if self._req_log is not None:
                 rec = {
                     "t0": time.time() - (t_first - t0), "isl": num_tokens, "hit": hit_tokens, "max_tokens": max_tokens,
-                    "tok_ms": (t_tok - t0) * 1e3, "lookup_ms": (t_look - t_tok) * 1e3, "retrieve_ms": (t_ret - t_look) * 1e3,
+                    "tok_ms": (t_tok - t0) * 1e3, "lookup_ms": (t_look - t_tok) * 1e3, "retrieve_ms": retrieve_ms,
                     "fe_wait_ms": (t_sub - t_ret) * 1e3, "engine_first_ms": (t_first - t_sub) * 1e3,
                     "inflight_at_submit": inflight_at_submit, "lag_ms_max": self.engine.lag_ms_max,
                 }
@@ -343,6 +356,8 @@ class CombinedServer:
                 self._req_log.flush()
         finally:
             self.engine.cancel(seq)
+            if ret_task is not None and not ret_task.done():
+                ret_task.add_done_callback(lambda t: t.exception())
             if store_task is not None and not store_task.done():
                 # Let an in-flight store finish in the background; never leak an
                 # unawaited failure.
