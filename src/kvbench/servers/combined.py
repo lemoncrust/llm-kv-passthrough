@@ -11,7 +11,9 @@ The server provides a complete OpenAI-compatible API with streaming support.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import os
 import time
 import uuid
 from collections.abc import AsyncIterator
@@ -164,6 +166,9 @@ class CombinedServer:
             logger.info("Hot KV set enabled: %.1f GB (%d-token chunks of %d bytes)", hot_bytes / (1 << 30), self.chunk_size, self.hot.chunk_bytes)
         # Continuous-batching engine model (gpu_engine.py); None = per-request timing.
         self.engine = build_engine(config)
+        # Optional per-request timing breakdown (JSONL), for validation runs.
+        _log = os.environ.get("KVBENCH_REQUEST_LOG")
+        self._req_log = open(_log, "a") if _log else None
 
     @property
     def model_name(self) -> str:
@@ -281,7 +286,13 @@ class CombinedServer:
         """
         assert self.engine is not None
         t0 = time.monotonic()
-        tokens, hit_tokens = await self._lookup_and_retrieve(request.prompt_text or "")
+        tokens = await asyncio.to_thread(self.processor.simulate_tokenize, request.prompt_text or "")
+        t_tok = time.monotonic()
+        hit_tokens = await self.kv.lookup(tokens)
+        t_look = time.monotonic()
+        if hit_tokens:
+            await self._retrieve_prefix(tokens, hit_tokens)
+        t_ret = time.monotonic()
         num_tokens = len(tokens)
         miss_tokens = num_tokens - hit_tokens
         self.stats.prompt_tokens += num_tokens
@@ -294,11 +305,22 @@ class CombinedServer:
             await asyncio.sleep(target_s - spent)
 
         max_tokens = request.effective_max_tokens
+        t_sub = time.monotonic()
+        inflight_at_submit = self.engine.in_flight
         seq = self.engine.submit(miss_tokens, hit_tokens, max_tokens, load_tokens=hit_tokens)
         store_task: asyncio.Task | None = None
+        rec = None
         try:
             await seq.queue.get()
-            ttft_ms = (time.monotonic() - t0) * 1000.0
+            t_first = time.monotonic()
+            ttft_ms = (t_first - t0) * 1000.0
+            if self._req_log is not None:
+                rec = {
+                    "t0": time.time() - (t_first - t0), "isl": num_tokens, "hit": hit_tokens, "max_tokens": max_tokens,
+                    "tok_ms": (t_tok - t0) * 1e3, "lookup_ms": (t_look - t_tok) * 1e3, "retrieve_ms": (t_ret - t_look) * 1e3,
+                    "fe_wait_ms": (t_sub - t_ret) * 1e3, "engine_first_ms": (t_first - t_sub) * 1e3,
+                    "inflight_at_submit": inflight_at_submit, "lag_ms_max": self.engine.lag_ms_max,
+                }
             self.stats.emulated_prefill_ms += ttft_ms
             self.stats.emulated_ttft_ms += ttft_ms
             self.stats.completed_with_ttft += 1
@@ -311,9 +333,14 @@ class CombinedServer:
                 step_ms = await seq.queue.get()
                 self.stats.emulated_decode_ms += step_ms
                 yield i, self._generate_mock_token(i)
+            t_last = time.monotonic()
             if store_task is not None:
                 await store_task
                 store_task = None
+            if rec is not None:
+                rec.update(decode_ms=(t_last - t_first) * 1e3, store_tail_ms=(time.monotonic() - t_last) * 1e3)
+                self._req_log.write(json.dumps(rec) + "\n")
+                self._req_log.flush()
         finally:
             self.engine.cancel(seq)
             if store_task is not None and not store_task.done():
