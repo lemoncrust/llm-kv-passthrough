@@ -294,7 +294,8 @@ class CombinedServer:
         t0 = time.monotonic()
         tokens = await asyncio.to_thread(self.processor.simulate_tokenize, request.prompt_text or "", self.config.timing.chars_per_token)
         t_tok = time.monotonic()
-        hit_tokens = await self.kv.lookup(tokens)
+        lookup_id = uuid.uuid4().hex
+        hit_tokens = await self.kv.lookup_pinned(tokens, lookup_id)
         t_look = time.monotonic()
         # The cached prefix is read through the KV stack for real, but the
         # emulator's copy (a CPU memcpy standing in for the engine's load)
@@ -325,6 +326,8 @@ class CombinedServer:
             if ret_task is not None:
                 retrieve_ms = await ret_task
                 ret_task = None
+            await self.kv.unpin(lookup_id)
+            lookup_id = None
             t_first = time.monotonic()
             ttft_ms = (t_first - t0) * 1000.0
             if self._req_log is not None:
@@ -356,6 +359,17 @@ class CombinedServer:
                 self._req_log.flush()
         finally:
             self.engine.cancel(seq)
+            if lookup_id is not None:
+                # cancelled before the first token: release the pins once any
+                # in-flight retrieve has finished with them
+                async def _late_unpin(task=ret_task, lid=lookup_id):
+                    if task is not None:
+                        try:
+                            await task
+                        except Exception:
+                            pass
+                    await self.kv.unpin(lid)
+                asyncio.create_task(_late_unpin())
             if ret_task is not None and not ret_task.done():
                 ret_task.add_done_callback(lambda t: t.exception())
             if store_task is not None and not store_task.done():

@@ -203,6 +203,41 @@ class LMCacheStack(KVStack):
         self.stats.hit_tokens += hit
         return int(hit)
 
+    async def lookup_pinned(self, tokens: list[int], lookup_id: str) -> int:
+        """Mirror vLLM's LMCache lookup server: every TP rank's engine runs
+        ``lookup(pin=True)``, which pins the hit chunks and ends in
+        ``touch_cache()`` -- the LRU refresh that keeps a returning session's
+        prefix resident. The hit is the minimum across ranks. Without it the
+        prefix kept its store-time recency and the 8 GB CPU tier evicted it
+        whole (emulated re-reads of 100 % of a prefix vs a median 55 % on the
+        real GB10)."""
+        self._require_engine()
+        try:
+            hits = await asyncio.gather(
+                *(
+                    asyncio.to_thread(engine.lookup, tokens, lookup_id=lookup_id, pin=True)
+                    for engine in self._engines
+                )
+            )
+        except Exception:
+            self.stats.errors += 1
+            raise
+        hit = int(min(hits)) if hits else 0
+        self.stats.lookups += 1
+        self.stats.lookup_tokens += len(tokens)
+        self.stats.hit_tokens += hit
+        return hit
+
+    async def unpin(self, lookup_id: str) -> None:
+        """Release a lookup's pins on every rank (vLLM does this in
+        wait_for_save, after the step that loaded the request)."""
+        if not self._engines:
+            return
+        await asyncio.gather(
+            *(asyncio.to_thread(engine.lookup_unpin, lookup_id) for engine in self._engines),
+            return_exceptions=True,
+        )
+
     async def store(self, tokens: list[int], skip_leading: int = 0) -> None:
         self._require_engine()
         try:
