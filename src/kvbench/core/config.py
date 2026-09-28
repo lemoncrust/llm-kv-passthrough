@@ -202,8 +202,8 @@ class TimingConfig(BaseModel):
         "in-flight requests (decodes share each step; prefills are chunked into the "
         "remaining token budget), instead of pricing each request as if alone on the GPU",
     )
-    batching_eff_bw: float = Field(default=0.70, gt=0, le=1.0, description="Memory-bandwidth efficiency of the step roofline")
-    batching_eff_flops: float = Field(default=0.50, gt=0, le=1.0, description="Compute efficiency of the step roofline")
+    batching_eff_bw: float = Field(default=0.90, gt=0, le=1.0, description="Memory-bandwidth efficiency of the step roofline")
+    batching_eff_flops: float = Field(default=0.45, gt=0, le=1.0, description="Compute efficiency of the step roofline")
     batching_overhead_ms: float = Field(default=0.0, ge=0, description="Fixed time added to every engine step (ms)")
     batching_token_budget: int = Field(default=8192, ge=16, description="Tokens per step (vLLM max_num_batched_tokens)")
     batching_max_num_seqs: int = Field(default=256, ge=1, description="Max sequences per step (vLLM max_num_seqs)")
@@ -211,11 +211,11 @@ class TimingConfig(BaseModel):
         default=None, description="Weight bytes per parameter read each step (None = the model dtype; e.g. ~0.55 for MXFP4)"
     )
     frontend_us_per_token: float = Field(
-        default=3.7, ge=0, description="Serving front-end time per prompt token (templating, tokenization, KV lookup) "
+        default=1.0, ge=0, description="Serving front-end time per prompt token (templating, tokenization, KV lookup) "
         "before a request reaches the engine, in microseconds; the emulator's own pre-engine work counts against it"
     )
     kv_load_gb_s: float | None = Field(
-        default=15.0, description="In-step load rate of the cached prefix into the engine (GB/s); None disables"
+        default=12.0, description="In-step load rate of the cached prefix into the engine (GB/s); None disables"
     )
 
 

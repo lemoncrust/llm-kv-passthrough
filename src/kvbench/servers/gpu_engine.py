@@ -31,8 +31,9 @@ Model. Step time is a roofline over the whole batch::
 
 with W the weight bytes read per step and P_lin the non-embedding parameters.
 Two efficiencies per GPU are the only fitted numbers; on GB10 one real capture
-gives eff_bw = 0.79 (decode) and eff_flops = 0.57 (cold prefills of 49k-117k
-tokens), which reproduce both the single-stream and the batched behaviour.
+gives eff_bw = 0.90 and eff_flops = 0.45 (see DEFAULT_* below), which
+reproduce single-stream decode, batched decode, cold 49k-117k-token
+prefills, and warm-turn TTFT together.
 """
 
 from __future__ import annotations
@@ -48,13 +49,17 @@ from kvbench.core.models import ModelProfile, get_model_profile
 
 logger = logging.getLogger(__name__)
 
-# Fitted on the GB10 AgentX capture by open-loop replay of all 139 real
-# requests through this model (median |error| 16 % latency, 14 % TTFT; run
-# totals 1.01x / 1.00x); used when a GPU has no fitted values of its own.
-DEFAULT_EFF_BW = 0.70
-DEFAULT_EFF_FLOPS = 0.50
-DEFAULT_FRONTEND_US_PER_TOKEN = 3.7
-DEFAULT_KV_LOAD_GB_S = 15.0
+# Fitted on the GB10 AgentX capture (8 GB host tier) by open-loop replay of
+# its 139 real requests through this model, using the tokens vLLM actually
+# generated (aiperf re-tokenizes output text and under-counts by ~17 %; its
+# osl_mismatch_diff_pct recovers the true count). Median per-request latency
+# error 3 %, run totals 0.99x latency / 0.97x TTFT; held-out 24 GB and
+# 8 GB + 16 GB-disk captures: 4 % / 3 %, totals 1.02x / 0.99x. Used when a
+# GPU has no fitted values of its own.
+DEFAULT_EFF_BW = 0.90
+DEFAULT_EFF_FLOPS = 0.45
+DEFAULT_FRONTEND_US_PER_TOKEN = 1.0
+DEFAULT_KV_LOAD_GB_S = 12.0
 # vLLM V1 default max_num_batched_tokens for the OpenAI server on large-memory
 # devices; decode tokens count against it.
 DEFAULT_TOKEN_BUDGET = 8192
