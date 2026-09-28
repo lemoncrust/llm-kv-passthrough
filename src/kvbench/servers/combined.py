@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from kvbench.core.tokens import TokenProcessor
+from kvbench.servers.gpu_engine import build_engine
 from kvbench.servers.hotset import HotKVSet
 from kvbench.servers.openai_compat import (
     ChatCompletionChunk,
@@ -157,10 +158,12 @@ class CombinedServer:
         except Exception:  # stack not started (tests) or no tier info
             cap = {}
         hot_gb = config.timing.hot_kv_gb
-        hot_bytes = int(hot_gb * (1 << 30)) if hot_gb is not None else int(cap.get("local_cpu_capacity_bytes") or 0)
+        hot_bytes = int(hot_gb * (1 << 30)) if hot_gb else 0
         self.hot = HotKVSet(hot_bytes, self.chunk_size, int(cap.get("chunk_bytes") or 0))
         if self.hot.enabled:
             logger.info("Hot KV set enabled: %.1f GB (%d-token chunks of %d bytes)", hot_bytes / (1 << 30), self.chunk_size, self.hot.chunk_bytes)
+        # Continuous-batching engine model (gpu_engine.py); None = per-request timing.
+        self.engine = build_engine(config)
 
     @property
     def model_name(self) -> str:
@@ -247,13 +250,84 @@ class CombinedServer:
         ]
         return mock_tokens[position % len(mock_tokens)]
 
+    async def _lookup_and_retrieve(self, prompt: str) -> tuple[list[int], int]:
+        """Tokenize (off the event loop), look up, and read the cached prefix
+        through the KV stack. Returns (tokens, hit_tokens)."""
+        # A 100k-token prompt takes ~0.1 s to tokenize; keep it off the loop
+        # so other streams' steps are not delayed.
+        tokens = await asyncio.to_thread(self.processor.simulate_tokenize, prompt)
+        hit_tokens = await self.kv.lookup(tokens)
+        if hit_tokens:
+            await self._retrieve_prefix(tokens, hit_tokens)
+        return tokens, hit_tokens
+
+    async def _retrieve_prefix(self, tokens: list[int], hit_tokens: int) -> None:
+        hot_tokens = self.hot.resident_prefix_chunks(tokens, hit_tokens // self.chunk_size) * self.chunk_size
+        self.stats.hot_tokens += hot_tokens
+        if hot_tokens >= hit_tokens:
+            return
+        if hot_tokens > 0:
+            await self.kv.retrieve(tokens[:hit_tokens], skip_leading=hot_tokens)
+        else:
+            await self.kv.retrieve(tokens[:hit_tokens])
+
+    async def _generate_batched(self, request: ChatCompletionRequest):
+        """Serve one request through the batching engine.
+
+        Yields ``(index, token_text)`` per generated token. The front-end
+        delay, the engine's queueing, chunked prefill and batched decode
+        steps set the pacing; the KV stack I/O is real. The store of the new
+        chunks overlaps decoding (vLLM saves layer-wise inside the step).
+        """
+        assert self.engine is not None
+        t0 = time.monotonic()
+        tokens, hit_tokens = await self._lookup_and_retrieve(request.prompt_text or "")
+        num_tokens = len(tokens)
+        miss_tokens = num_tokens - hit_tokens
+        self.stats.prompt_tokens += num_tokens
+        self.stats.cache_hits += hit_tokens // self.chunk_size
+        self.stats.cache_misses += (miss_tokens + self.chunk_size - 1) // self.chunk_size
+
+        target_s = self.config.timing.frontend_us_per_token * num_tokens / 1e6
+        spent = time.monotonic() - t0
+        if target_s > spent:
+            await asyncio.sleep(target_s - spent)
+
+        max_tokens = request.effective_max_tokens
+        seq = self.engine.submit(miss_tokens, hit_tokens, max_tokens, load_tokens=hit_tokens)
+        store_task: asyncio.Task | None = None
+        try:
+            await seq.queue.get()
+            ttft_ms = (time.monotonic() - t0) * 1000.0
+            self.stats.emulated_prefill_ms += ttft_ms
+            self.stats.emulated_ttft_ms += ttft_ms
+            self.stats.completed_with_ttft += 1
+            store_end = (num_tokens // self.chunk_size) * self.chunk_size
+            if miss_tokens and store_end > hit_tokens:
+                store_task = asyncio.create_task(self.kv.store(tokens[:store_end], skip_leading=hit_tokens))
+            self.hot.insert(tokens, max(hit_tokens, store_end if miss_tokens else 0) // self.chunk_size)
+            yield 0, self._generate_mock_token(0)
+            for i in range(1, max_tokens):
+                step_ms = await seq.queue.get()
+                self.stats.emulated_decode_ms += step_ms
+                yield i, self._generate_mock_token(i)
+            if store_task is not None:
+                await store_task
+                store_task = None
+        finally:
+            self.engine.cancel(seq)
+            if store_task is not None and not store_task.done():
+                # Let an in-flight store finish in the background; never leak an
+                # unawaited failure.
+                store_task.add_done_callback(lambda t: t.exception())
+
     async def _process_prefill(self, prompt: str) -> tuple[int, int, int]:
         """Process prefill phase.
 
         Returns:
             Tuple of (num_tokens, cache_hits, cache_misses).
         """
-        tokens = self.processor.simulate_tokenize(prompt)
+        tokens = await asyncio.to_thread(self.processor.simulate_tokenize, prompt)
         num_tokens = len(tokens)
 
         # Ask the KV stack how much of the sequence is already cached
@@ -312,6 +386,27 @@ class CombinedServer:
         start_time = time.time()
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
         self._request_ttft_ms = 0.0
+
+        if self.engine is not None:
+            try:
+                n = 0
+                async for i, token in self._generate_batched(request):
+                    if i == 0:
+                        yield ChatCompletionChunk.create_start(model=self.model_name, completion_id=completion_id).to_sse()
+                    yield ChatCompletionChunk.create_content(model=self.model_name, content=token, completion_id=completion_id).to_sse()
+                    n += 1
+                yield ChatCompletionChunk.create_end(model=self.model_name, completion_id=completion_id, finish_reason="stop").to_sse()
+                yield "data: [DONE]\n\n"
+                elapsed_ms = (time.time() - start_time) * 1000
+                self.stats.completion_tokens += n
+                self.stats.total_latency_ms += elapsed_ms
+                self.stats.wall_serving_ms += elapsed_ms
+                self.stats.requests_success += 1
+            except Exception as e:
+                self.stats.requests_failed += 1
+                logger.error(f"Streaming request failed: {e}")
+                yield f"data: {ErrorResponse.create(str(e), 'server_error').model_dump_json()}\n\n"
+            return
 
         try:
             # Prefill phase
@@ -389,6 +484,25 @@ class CombinedServer:
         self.stats.requests_total += 1
         start_time = time.time()
         self._request_ttft_ms = 0.0
+
+        if self.engine is not None:
+            try:
+                text, n = "", 0
+                async for _i, token in self._generate_batched(request):
+                    text += token
+                    n += 1
+                elapsed_ms = (time.time() - start_time) * 1000
+                self.stats.completion_tokens += n
+                self.stats.total_latency_ms += elapsed_ms
+                self.stats.wall_serving_ms += elapsed_ms
+                self.stats.requests_success += 1
+                return ChatCompletionResponse.create(
+                    model=self.model_name, content=text, prompt_tokens=0, completion_tokens=n, finish_reason="stop"
+                )
+            except Exception as e:
+                self.stats.requests_failed += 1
+                logger.error(f"Request failed: {e}")
+                return ErrorResponse.create(str(e), "server_error")
 
         try:
             # Prefill phase
@@ -487,6 +601,9 @@ class CombinedServer:
 
     async def stop(self) -> None:
         """Stop the server (the KV stack's lifecycle is owned by the app)."""
+        if self.engine is not None:
+            logger.info("Batching engine stats: %s", self.engine.info())
+            await self.engine.close()
         self._running = False
         st = self.stats
         logger.info(
