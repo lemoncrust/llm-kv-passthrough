@@ -214,6 +214,10 @@ class TimingConfig(BaseModel):
         default=1.0, ge=0, description="Serving front-end time per prompt token (templating, tokenization, KV lookup) "
         "before a request reaches the engine, in microseconds; the emulator's own pre-engine work counts against it"
     )
+    chars_per_token: float = Field(
+        default=4.0, gt=1.0, le=8.0, description="Characters per simulated prompt token; fractional values supported "
+        "(3.84 matches the Llama 3 tokenizer on the AgentX traces)"
+    )
     kv_load_gb_s: float | None = Field(
         default=12.0, description="In-step load rate of the cached prefix into the engine (GB/s); None disables"
     )

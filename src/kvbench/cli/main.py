@@ -99,6 +99,7 @@ def serve(
     token_budget: int | None = typer.Option(None, "--token-budget", help="Batching engine tokens per step (vLLM max_num_batched_tokens, default 8192)"),
     frontend_us_per_token: float | None = typer.Option(None, "--frontend-us-per-token", help="Front-end time per prompt token before the engine, us (default 1.0)"),
     kv_load_gb_s: float | None = typer.Option(None, "--kv-load-gbs", help="In-step cached-prefix load rate, GB/s (default 12; 0 disables)"),
+    chars_per_token: float | None = typer.Option(None, "--chars-per-token", help="Characters per simulated prompt token (default 4.0; fractional OK)"),
     step_overhead_ms: float | None = typer.Option(None, "--step-overhead-ms", help="Fixed time added to every batching-engine step, ms (default 0)"),
     weight_bytes_per_param: float | None = typer.Option(None, "--weight-bytes-per-param", help="Weight bytes per parameter read per step (default: model dtype)"),
     prefill_ms_per_token: float | None = typer.Option(
@@ -171,6 +172,7 @@ def serve(
             "kv_load_gb_s": kv_load_gb_s,
             "batching_weight_bytes_per_param": weight_bytes_per_param,
             "batching_overhead_ms": step_overhead_ms,
+            "chars_per_token": chars_per_token,
             "prefill_ms_per_token": prefill_ms_per_token,
             "decode_ms_per_token": decode_ms_per_token,
             "pp_size": pp_size,

@@ -260,7 +260,7 @@ class CombinedServer:
         through the KV stack. Returns (tokens, hit_tokens)."""
         # A 100k-token prompt takes ~0.1 s to tokenize; keep it off the loop
         # so other streams' steps are not delayed.
-        tokens = await asyncio.to_thread(self.processor.simulate_tokenize, prompt)
+        tokens = await asyncio.to_thread(self.processor.simulate_tokenize, prompt, self.config.timing.chars_per_token)
         hit_tokens = await self.kv.lookup(tokens)
         if hit_tokens:
             await self._retrieve_prefix(tokens, hit_tokens)
@@ -292,7 +292,7 @@ class CombinedServer:
         """
         assert self.engine is not None
         t0 = time.monotonic()
-        tokens = await asyncio.to_thread(self.processor.simulate_tokenize, request.prompt_text or "")
+        tokens = await asyncio.to_thread(self.processor.simulate_tokenize, request.prompt_text or "", self.config.timing.chars_per_token)
         t_tok = time.monotonic()
         hit_tokens = await self.kv.lookup(tokens)
         t_look = time.monotonic()
@@ -380,7 +380,7 @@ class CombinedServer:
         Returns:
             Tuple of (num_tokens, cache_hits, cache_misses).
         """
-        tokens = await asyncio.to_thread(self.processor.simulate_tokenize, prompt)
+        tokens = await asyncio.to_thread(self.processor.simulate_tokenize, prompt, self.config.timing.chars_per_token)
         num_tokens = len(tokens)
 
         # Ask the KV stack how much of the sequence is already cached
