@@ -11,6 +11,7 @@ from __future__ import annotations
 import abc
 import time
 from dataclasses import dataclass, field
+from typing import Any
 
 
 @dataclass
@@ -36,6 +37,8 @@ class KVStackStats:
     stored_tokens: int = 0
     retrieves: int = 0
     retrieved_tokens: int = 0
+    submitted_store_bytes: int = 0
+    retrieved_bytes: int = 0
     errors: int = 0
     start_time: float = field(default_factory=time.time)
 
@@ -78,14 +81,14 @@ class KVStack(abc.ABC):
             as determined by the stack).
         """
 
-    async def lookup_pinned(self, tokens: list[int], lookup_id: str) -> int:
+    async def lookup_pinned(self, tokens: list[int], lookup_id: str) -> int:  # noqa: ARG002 - optional capability
         """Look up the cached prefix the way a serving engine's connector does
         before scheduling a request: pin the hit chunks until ``unpin`` and
         let the stack refresh their recency. Stacks without pinning fall back
         to ``lookup``."""
         return await self.lookup(tokens)
 
-    async def unpin(self, lookup_id: str) -> None:
+    async def unpin(self, lookup_id: str) -> None:  # noqa: ARG002 - optional capability
         """Release the pins taken by ``lookup_pinned`` (no-op by default)."""
         return None
 
@@ -113,6 +116,13 @@ class KVStack(abc.ABC):
     @abc.abstractmethod
     async def close(self) -> None:
         """Shut down the stack and release its resources."""
+
+    def capacity_info(self) -> dict[str, Any]:
+        """Optional introspection used by warmup and run manifests."""
+        raise NotImplementedError("KV stack does not expose capacity_info()")
+
+    def usage_info(self) -> dict[str, dict[str, Any]]:
+        return {}
 
     async def __aenter__(self) -> KVStack:
         await self.start()

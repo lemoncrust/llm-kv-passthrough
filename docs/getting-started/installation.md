@@ -1,60 +1,18 @@
 # Installation
 
-## Requirements
-
-- Python 3.11+
-- pip or pipx
-
-## Install from PyPI
+Python 3.11+; Linux is the tested platform. Install from this repository:
 
 ```bash
-pip install kvbench
-```
-
-## Install from Source
-
-```bash
-git clone https://github.com/your-org/kv-bench.git
-cd kv-bench
-pip install -e ".[dev]"
-```
-
-## Docker Installation
-
-```bash
-# Build the image
-docker build -t kvbench .
-
-# Run the container
-docker run -p 8000:8000 kvbench
-```
-
-## Verify Installation
-
-```bash
-# Check version
+git clone https://github.com/wvaske/llm-kv-passthrough.git
+cd llm-kv-passthrough
+python -m pip install -e '.[lmcache]'
 kvbench version
-
-# List available profiles
-kvbench list-profiles
-
-# Start server
-kvbench serve --help
+kvbench serve --config examples/rate-v1.yaml
 ```
 
-## Optional Dependencies
+LMCache 0.5.4 and Torch are required to serve; no inference GPU or weights are
+required. `.[dev]` adds test/lint dependencies, `.[docs]` adds the MkDocs tools.
+There are no independent `redis`/`s3` extras in KV-Bench; LMCache owns backends.
 
-### Redis Backend
-```bash
-pip install "kvbench[redis]"
-```
-
-### S3/MinIO Backend
-```bash
-pip install "kvbench[s3]"
-```
-
-### All Backends
-```bash
-pip install "kvbench[all]"
-```
+For tests use `bash scripts/test-safe.sh tests/` with an installed `.venv`, or
+set `PYTHON` to your interpreter. This imposes a process memory limit.

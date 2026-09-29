@@ -7,17 +7,18 @@ services:
       context: ../..
       dockerfile: Dockerfile
     image: kvbench:latest
+    mem_limit: 2g
     ports:
       - "8000:8000"
     environment:
       KVBENCH_SERVER__SERVER_TYPE: combined
-      KVBENCH_SERVER__MODEL_PROFILE: llama-3.1-8b
+      KVBENCH_SERVER__MODEL_PROFILE: llama-3.2-1b
       KVBENCH_GPU__GPU_PROFILE: H100_SXM
       # Storage is LMCache's to manage:
       LMCACHE_CHUNK_SIZE: "256"
-      LMCACHE_MAX_LOCAL_CPU_SIZE: "4"
+      LMCACHE_MAX_LOCAL_CPU_SIZE: "0.25"
       LMCACHE_LOCAL_DISK: "file:///var/lib/lmcache/"
-      LMCACHE_MAX_LOCAL_DISK_SIZE: "20"
+      LMCACHE_MAX_LOCAL_DISK_SIZE: "0.5"
     volumes:
       - kvbench-lmcache:/var/lib/lmcache
     healthcheck:

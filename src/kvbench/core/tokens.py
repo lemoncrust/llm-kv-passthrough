@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
-
+from typing import Any, cast
 
 
 def _hash_granules(text_bytes: bytes, granule: int, vocab: int = 128256, extra_every: int = 0) -> list[int]:
@@ -51,7 +51,7 @@ def _hash_granules(text_bytes: bytes, granule: int, vocab: int = 128256, extra_e
             x = (z[pos] ^ np.uint64(0xD6E8FEB86659FD93)) * np.uint64(0x9E3779B97F4A7C15)
             x = x ^ (x >> np.uint64(29))
         ids = np.insert(ids, pos + 1, (x % np.uint64(vocab)).astype(np.int64))
-    return ids.tolist()
+    return cast(list[int], ids.tolist())
 
 
 @dataclass
@@ -415,7 +415,7 @@ class CacheKeyGenerator:
             keys.append(key)
         return keys
 
-    def parse_key(self, key: str) -> dict:
+    def parse_key(self, key: str) -> dict[str, Any]:
         """Parse a cache key into its components.
 
         Args:

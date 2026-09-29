@@ -48,6 +48,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -200,6 +201,7 @@ class CalibratedTimingStrategy(TimingStrategy):
         self._gpu_name = gpu if isinstance(gpu, str) else gpu.name
         self._model_name = model if isinstance(model, str) else model.name
         self._tp_size = tp_size
+        self._scale_cache: dict[tuple[str, int], tuple[float, str]] = {}
 
         self._backbone = RooflineTimingStrategy(
             gpu=gpu,
@@ -319,11 +321,11 @@ class CalibratedTimingStrategy(TimingStrategy):
             (f"all {my_class}-class anchors", same_class),
         ]
         # Re-derive each tier with the ISL preference applied
-        def tier_values(pred) -> list[float]:
+        def tier_values(pred: Callable[[_AnchorScale], bool]) -> list[float]:
             cands = [s for s in self._scored if usable(s) is not None and pred(s)]
             close = [s for s in cands if near(s)]
             chosen = close or cands
-            return [usable(s) for s in chosen]
+            return [v for s in chosen if (v := usable(s)) is not None]
 
         my_class = _hardware_class(self._gpu_name)
         tiers = [
@@ -339,7 +341,7 @@ class CalibratedTimingStrategy(TimingStrategy):
         # efficiency (0.7 -> scale 1/0.7).
         return 1.0 / 0.7, "no anchors (default efficiency 0.7)"
 
-    def _apply(self, result: TimingResult, scale: float, tier: str) -> TimingResult:
+    def _apply(self, result: TimingResult, scale: float, _tier: str) -> TimingResult:
         return TimingResult(
             total_ms=result.total_ms * scale,
             breakdown={
@@ -351,10 +353,12 @@ class CalibratedTimingStrategy(TimingStrategy):
 
     def _scale_for(self, kind: str, isl: int) -> tuple[float, str]:
         """ISL-aware scale, memoized per power-of-two ISL bucket."""
-        cache = self.__dict__.setdefault("_scale_cache", {})
+        cache = self._scale_cache
         bucket = (kind, max(isl, 1).bit_length())
         if bucket not in cache:
-            cache[bucket] = self._select_scale(kind, isl=isl)
+            # Use a canonical representative rather than the first request in
+            # the bucket, so predictions do not depend on request order.
+            cache[bucket] = self._select_scale(kind, isl=1 << (bucket[1] - 1))
         return cache[bucket]
 
     def prefill_latency(

@@ -84,7 +84,10 @@ check: lint type-check
 
 # Testing targets
 test:
-	$(PYTEST) tests/
+	PYTHON=$(PYTHON) bash scripts/test-safe.sh tests/
+
+test-safe:
+	bash scripts/test-safe.sh tests/
 
 test-unit:
 	$(PYTEST) tests/unit/ -v

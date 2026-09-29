@@ -21,6 +21,7 @@
           - python3-pip
           - python3-venv
           - curl
+          - git
         state: present
         update_cache: yes
       when: ansible_os_family == "Debian"
@@ -57,6 +58,15 @@
       args:
         creates: "{{ kvbench_home }}/venv/bin/python"
       become_user: "{{ kvbench_user }}"
+
+    - name: Create the configured LMCache disk directory
+      file:
+        path: "{{ lmcache_local_disk_path }}"
+        state: directory
+        owner: "{{ kvbench_user }}"
+        group: "{{ kvbench_group }}"
+        mode: '0755'
+      when: lmcache_local_disk_path is defined
 
     # kvbench is not published on PyPI; install from git (or override
     # kvbench_pip_spec with a local wheel path or another VCS ref).
@@ -110,7 +120,6 @@
       until: health_check.status == 200
       retries: 30
       delay: 2
-      ignore_errors: yes
 
     - name: Display service status
       debug:

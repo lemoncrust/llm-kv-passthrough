@@ -1,259 +1,91 @@
-# GenAI-Perf Benchmarking
+# External workload generators
 
-KV-Bench is compatible with NVIDIA's [GenAI-Perf](https://github.com/triton-inference-server/perf_analyzer/tree/main/genai-perf) tool for standardized LLM benchmarking.
+The V1 API supports ordinary OpenAI chat requests with fixed output lengths,
+SSE, `max_completion_tokens`/`max_tokens`, streamed usage, and
+`usage.prompt_tokens_details.cached_tokens`. A real CLI/HTTP integration test
+exercises this protocol through LMCache and disk. **NVIDIA AIPerf 0.13.0** was
+also exercised against the server; it remains an external client dependency.
 
-## Overview
+## Verified AIPerf invocation
 
-GenAI-Perf provides comprehensive performance metrics for LLM inference:
-
-- **Throughput**: Requests/second, tokens/second
-- **Latency**: P50, P90, P99 latencies
-- **TTFT**: Time to first token
-- **ITL**: Inter-token latency
-
-## Installation
-
-```bash
-pip install genai-perf
-```
-
-Or with Docker:
+Start `kvbench serve --config examples/aiperf-validation.yaml` for the small
+storage smoke. Use a fresh disk directory and restart between cold comparisons.
+This invocation uses the client's built-in tokenizer for
+input synthesis and the emulator's usage fields for metrics:
 
 ```bash
-docker pull nvcr.io/nvidia/tritonserver:24.01-py3-sdk
+aiperf profile --model llama-3.2-1b --tokenizer builtin \
+  --url http://localhost:8000 --endpoint-type chat --streaming \
+  --use-server-token-count --concurrency 2 --max-workers 1 --record-processors 1 \
+  --request-count 6 --num-dataset-entries 6 --random-seed 42 \
+  --synthetic-input-tokens-mean 128 --synthetic-input-tokens-stddev 0 \
+  --output-tokens-mean 16 --output-tokens-stddev 0 \
+  --conversation-turn-mean 1 --conversation-turn-stddev 0 \
+  --no-gpu-telemetry --no-server-metrics --ui none --artifact-dir ./aiperf-results
 ```
 
-## Basic Usage
+The validation used fresh cache state for each scenario, a 16-token prefill
+slice and LMCache
+chunk, an 8 MiB CPU tier and 512 MiB disk tier. The model was Llama 3.2 1B
+(32 KiB KV/token), rates were 10,000 prefill / 200 decode tokens/s. Every
+scenario completed six requests with zero errors:
 
-### Simple Benchmark
+| Workload | File writes | Written | File reads | Read | Cache-hit tokens |
+|---|---:|---:|---:|---:|---:|
+| ISL target 128, output 16, one turn | 56 | 28 MiB | 0 | 0 | 0 |
+| ISL target 128, output 64, one turn | 74 | 37 MiB | 0 | 0 | 0 |
+| ISL target 128, output 16, three turns | 58 | 29 MiB | 47 | 23.5 MiB | 928 |
+
+The extra 48 output tokens × 6 requests × 32 KiB/token explain the **exact
+9 MiB write increase**. Multi-turn history introduced real prefix reads and
+reuse. This is a workload-sensitivity result, not a real-GPU performance claim.
+The experiment's server/client process tree ran inside a 3 GiB, swap-disabled
+systemd memory scope in addition to process limits.
+A second run with the cache-usage fields enabled reproduced the same I/O counts;
+AIPerf reported 928 cached prompt tokens and zero output-length mismatches for
+the multi-turn scenario.
+
+Start the server with `examples/rate-v1.yaml`. Point your installed NVIDIA
+AIPerf or GenAI-Perf at `http://localhost:8000`, endpoint type `chat`, and the
+served model ID `llama-3.2-1b`. Configure the client's tokenizer separately if
+it needs a Hugging Face tokenizer; the served model ID is a profile identifier.
+
+For a GenAI-Perf installation supporting these options:
 
 ```bash
-# Start KV-Bench server
-kvbench serve --model llama-3.1-8b --gpu H100_SXM
-
-# Run GenAI-Perf
-genai-perf \
-  --endpoint http://localhost:8000/v1/chat/completions \
-  --model llama-3.1-8b \
-  --concurrency 10 \
-  --num-requests 100
+genai-perf profile -m llama-3.2-1b \
+  --service-kind openai --endpoint-type chat --url http://localhost:8000 \
+  --streaming --synthetic-input-tokens-mean 2048 --output-tokens-mean 256 \
+  --concurrency 4 --request-count 100
 ```
 
-### Streaming Benchmark
+`scripts/genai_perf_test.sh` invokes this against an already running endpoint;
+it neither installs tools nor suppresses failures. Consult the installed
+client's help for version-specific workload/replay options.
 
-```bash
-genai-perf \
-  --endpoint http://localhost:8000/v1/chat/completions \
-  --model llama-3.1-8b \
-  --streaming \
-  --concurrency 10 \
-  --num-requests 100
-```
+## Workload experiments
 
-## Configuration Options
+Hold rates, rank layout, chunk size, tier sizes and initial cache state constant.
+Vary one dimension at a time:
 
-### Concurrency Sweep
+| Change | Expected direction |
+|---|---|
+| Longer unique prompts | More prefill work and full KV chunks |
+| Longer output | More decode work and generated KV chunks |
+| More conversation turns | More prefix reads and incremental KV writes |
+| More shared prefix | More reuse and less new prefill/storage admission |
+| More independent sessions | Larger working set and eventual eviction pressure |
+| More concurrency | More shared scheduling/queueing; aggregate compute rates do not multiply |
+| More TP ranks | More, smaller rank artifacts; replication can increase aggregate bytes |
+| Smaller KV dtype | Proportionally smaller payloads |
 
-Test performance across different concurrency levels:
+Capture `/kvbench/manifest`, `/stats`, `/kvbench/state`, and JSONL I/O traces.
+For closed-loop traffic, rate changes also change arrivals/session overlap. Use
+open-loop arrivals when you need to separate those effects.
 
-```bash
-for concurrency in 1 2 4 8 16 32; do
-  genai-perf \
-    --endpoint http://localhost:8000/v1/chat/completions \
-    --model llama-3.1-8b \
-    --concurrency $concurrency \
-    --num-requests 100 \
-    --output results_c${concurrency}.json
-done
-```
+The emulator's usage counts synthetic tokens. Client re-tokenization of output
+will differ. Treat storage byte/chunk counts and synthetic usage as the V1
+accounting boundary, not semantic output quality or tokenizer equivalence.
 
-### Input Length Variation
-
-Test with different prompt lengths:
-
-```bash
-genai-perf \
-  --endpoint http://localhost:8000/v1/chat/completions \
-  --model llama-3.1-8b \
-  --input-tokens-mean 512 \
-  --input-tokens-stddev 64 \
-  --output-tokens-mean 128 \
-  --output-tokens-stddev 32
-```
-
-### Custom Dataset
-
-Use custom prompts for benchmarking:
-
-```bash
-# Create dataset file
-cat > prompts.jsonl << 'EOF'
-{"prompt": "What is machine learning?"}
-{"prompt": "Explain the theory of relativity"}
-{"prompt": "Write a Python function to sort a list"}
-EOF
-
-genai-perf \
-  --endpoint http://localhost:8000/v1/chat/completions \
-  --model llama-3.1-8b \
-  --dataset prompts.jsonl
-```
-
-## Benchmark Scenarios
-
-### Single Server
-
-```bash
-# Combined mode benchmark
-kvbench serve --type combined &
-
-genai-perf \
-  --endpoint http://localhost:8000/v1/chat/completions \
-  --model llama-3.1-8b \
-  --concurrency 16 \
-  --num-requests 1000 \
-  --output single_server.json
-```
-
-### Distributed Deployment
-
-```bash
-# Start distributed cluster
-docker-compose -f docker-compose.distributed.yml up -d
-
-# Benchmark through proxy
-genai-perf \
-  --endpoint http://localhost:8000/v1/chat/completions \
-  --model llama-3.1-8b \
-  --concurrency 32 \
-  --num-requests 1000 \
-  --output distributed.json
-```
-
-### Cache Hit/Miss Comparison
-
-```bash
-# First run - cache cold
-genai-perf \
-  --endpoint http://localhost:8000/v1/chat/completions \
-  --model llama-3.1-8b \
-  --dataset shared_prefix_prompts.jsonl \
-  --num-requests 100 \
-  --output cache_cold.json
-
-# Second run - cache warm
-genai-perf \
-  --endpoint http://localhost:8000/v1/chat/completions \
-  --model llama-3.1-8b \
-  --dataset shared_prefix_prompts.jsonl \
-  --num-requests 100 \
-  --output cache_warm.json
-```
-
-## Output Metrics
-
-GenAI-Perf provides detailed metrics:
-
-```json
-{
-  "request_throughput": 45.2,
-  "output_token_throughput": 1824.5,
-  "time_to_first_token": {
-    "p50": 0.023,
-    "p90": 0.045,
-    "p99": 0.089
-  },
-  "inter_token_latency": {
-    "p50": 0.012,
-    "p90": 0.018,
-    "p99": 0.028
-  },
-  "request_latency": {
-    "p50": 0.234,
-    "p90": 0.456,
-    "p99": 0.789
-  }
-}
-```
-
-## Analysis Scripts
-
-### Compare Results
-
-```python
-import json
-import pandas as pd
-
-def compare_results(files):
-    results = []
-    for f in files:
-        with open(f) as fp:
-            data = json.load(fp)
-            results.append({
-                'file': f,
-                'throughput': data['request_throughput'],
-                'ttft_p50': data['time_to_first_token']['p50'],
-                'ttft_p99': data['time_to_first_token']['p99'],
-            })
-    return pd.DataFrame(results)
-
-df = compare_results(['cache_cold.json', 'cache_warm.json'])
-print(df.to_markdown())
-```
-
-### Generate Report
-
-```bash
-# Use built-in script
-scripts/genai_perf_test.sh
-
-# Or generate custom report
-python -c "
-import json
-with open('results.json') as f:
-    data = json.load(f)
-print(f'Throughput: {data[\"request_throughput\"]:.2f} req/s')
-print(f'TTFT P50: {data[\"time_to_first_token\"][\"p50\"]*1000:.2f} ms')
-print(f'TTFT P99: {data[\"time_to_first_token\"][\"p99\"]*1000:.2f} ms')
-"
-```
-
-## Best Practices
-
-1. **Warm up**: Run a few requests before benchmarking
-2. **Consistent load**: Use fixed concurrency for comparisons
-3. **Realistic prompts**: Use production-like input distributions
-4. **Multiple runs**: Average results across multiple runs
-5. **Monitor resources**: Check CPU/memory during benchmarks
-
-## Troubleshooting
-
-### Connection Errors
-
-```bash
-# Check server is running
-curl http://localhost:8000/health
-
-# Check endpoint format
-genai-perf --endpoint http://localhost:8000/v1/chat/completions ...
-```
-
-### Timeout Errors
-
-```bash
-# Increase timeout
-genai-perf --request-timeout 60 ...
-
-# Reduce concurrency
-genai-perf --concurrency 4 ...
-```
-
-### Memory Issues
-
-```bash
-# Reduce batch size
-genai-perf --batch-size 1 ...
-
-# Use streaming
-genai-perf --streaming ...
-```
+Warmup and serving do not overlap. Record a measurement start timestamp or use
+separate runs; trace-to-FIO does not automatically remove warmup events.

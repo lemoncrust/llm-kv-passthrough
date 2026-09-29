@@ -1,63 +1,26 @@
-# Storage
+# Storage ownership and measurements
 
-**KV-Bench never performs storage I/O itself.** The storage under test sits
-under the KV management stack — exactly where it sits in a real vLLM +
-LMCache deployment. All KV cache operations (lookup, store, retrieve) go
-through the real LMCache engine, and LMCache owns the entire storage
-control plane: token chunking, prefix hashing, tier placement, spilling,
-eviction, serialization, and every byte written to or read from storage.
+All KV payload I/O goes through **real LMCache**. KV-Bench has no independent
+storage backend implementations. LMCache configuration controls chunk size,
+CPU/local-disk capacities and optional remote backends.
 
-```
-Mock inference servers (prefill / decode / combined)
-        │  token sequences + mock GPU-side KV tensors
-        ▼
-LMCache engine (real library, CPU-only capable)
-        │  chunking · hashing · tiering · eviction
-        ▼
-Storage under test
-  CPU RAM tier → local disk tier → remote backend (Redis, Mooncake, ...)
-```
+Each logical TP/PP rank owns a CPU pool and backend instance. Configured tier
+sizes are per rank; `/kvbench/state` reports their aggregate and per-rank chunk
+geometry. A shared local-disk directory alone does not provide cross-process
+discovery: LMCache's local-disk index is process-local. Use an appropriate
+LMCache remote backend for cross-process sharing, and validate that deployment.
 
-## Why this design
+Use a fresh directory for cold-run comparisons. A restarted local-disk engine
+does not account for old files in its new in-memory index; its per-run capacity
+limit is not a cleanup policy for artifacts from earlier runs.
 
-Benchmarking storage for LLM inference is only meaningful if the I/O
-pattern matches what the KV management stack actually produces: LMCache's
-chunk sizes, its key format, its tiering and spill decisions, its
-serialization. Reimplementing storage backends inside the benchmark would
-measure the benchmark's own I/O, not LMCache's. So KV-Bench has no storage
-backends of its own — anything LMCache supports, KV-Bench benchmarks.
+KV `stored_tokens` counts bytes/tokens **submitted** to LMCache, not confirmed
+durable writes. LMCache can deduplicate or decline cache admission under
+pressure, and disk writes happen on its workers. Trace `io/write` and `io/read`
+events measure completed file operations. These are application-level file
+operations, not block-device tracing; remote physical I/O is not instrumented.
 
-## Configuring storage
-
-Storage is configured **through LMCache's own application configuration**,
-not through KV-Bench settings:
-
-```yaml
-# lmcache.yaml — passed to `kvbench serve --lmcache-config lmcache.yaml`
-chunk_size: 256
-
-# Tier 1: CPU memory
-local_cpu: true
-max_local_cpu_size: 4.0        # GB
-
-# Tier 2: local disk (NVMe under test)
-local_disk: "file:///var/lib/lmcache/"
-max_local_disk_size: 100.0     # GB
-
-# Tier 3: remote backend (shared across prefill/decode fleets)
-# remote_url: "redis://cache-host:6379"
-# remote_serde: "naive"
-```
-
-Alternatively, set LMCache's `LMCACHE_*` environment variables and omit
-the file. See the [LMCache documentation](https://docs.lmcache.ai/) for
-the full option set — every option applies unmodified.
-
-## Sizing and authenticity
-
-KV tensor sizes are derived from the emulated model profile (layers, KV
-heads, head dimension, dtype), so the number of bytes flowing into LMCache
-per token matches the real model. The GPU side is mocked with CPU tensors
-via LMCache's `GPUConnectorInterface`; everything downstream of that
-interface is unmodified LMCache code, including the on-disk key format
-(`<model>@<world_size>@<worker_id>@<hash>`).
+Warmup reports submitted bytes and an earliest-prefix eviction probe. That is
+evidence of eviction, not a proof that every tier is in steady state. Warmup
+and measured serving must not overlap. Keep separate traces/run windows when
+deriving workload characteristics.

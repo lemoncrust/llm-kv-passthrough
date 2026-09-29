@@ -56,6 +56,10 @@ class ResponseFormat(BaseModel):
     type: Literal["text", "json_object"] = "text"
 
 
+class StreamOptions(BaseModel):
+    include_usage: bool = False
+
+
 class ChatCompletionRequest(BaseModel):
     """OpenAI-compatible chat completion request.
 
@@ -84,8 +88,9 @@ class ChatCompletionRequest(BaseModel):
     n: int | None = Field(default=1, ge=1, le=128)
     stream: bool | None = False
     stop: str | list[str] | None = None
-    max_tokens: int | None = None
-    max_completion_tokens: int | None = None  # newer OpenAI chat field; aiperf sends this one
+    max_tokens: int | None = Field(default=None, ge=1)
+    max_completion_tokens: int | None = Field(default=None, ge=1)
+    stream_options: StreamOptions | None = None
     presence_penalty: float | None = Field(default=0.0, ge=-2.0, le=2.0)
 
     @property
@@ -118,12 +123,16 @@ class ChatCompletionRequest(BaseModel):
         return "\n".join(parts)
 
     @property
-    def last_user_message(self) -> str | None:
+    def last_user_message(self) -> str | list[Any] | None:
         """Get the last user message content."""
         for msg in reversed(self.messages):
             if msg.role == MessageRole.USER and msg.content:
                 return msg.content
         return None
+
+
+class PromptTokenDetails(BaseModel):
+    cached_tokens: int = Field(default=0, ge=0)
 
 
 class Usage(BaseModel):
@@ -138,6 +147,7 @@ class Usage(BaseModel):
     prompt_tokens: int
     completion_tokens: int
     total_tokens: int
+    prompt_tokens_details: PromptTokenDetails | None = None
 
 
 class ChoiceMessage(BaseModel):
@@ -195,6 +205,7 @@ class ChatCompletionResponse(BaseModel):
         prompt_tokens: int,
         completion_tokens: int,
         finish_reason: str = "stop",
+        cached_tokens: int | None = None,
     ) -> ChatCompletionResponse:
         """Create a simple completion response.
 
@@ -221,6 +232,7 @@ class ChatCompletionResponse(BaseModel):
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
                 total_tokens=prompt_tokens + completion_tokens,
+                prompt_tokens_details=PromptTokenDetails(cached_tokens=cached_tokens) if cached_tokens is not None else None,
             ),
         )
 
@@ -269,6 +281,7 @@ class ChatCompletionChunk(BaseModel):
     model: str
     choices: list[StreamChoice]
     system_fingerprint: str | None = None
+    usage: Usage | None = None
 
     @classmethod
     def create_start(cls, model: str, completion_id: str | None = None) -> ChatCompletionChunk:
@@ -475,3 +488,8 @@ class MetricsResponse(BaseModel):
     actual_tokens_per_s: float | None = None
     emulated_prefill_ms: float | None = None
     emulated_decode_ms: float | None = None
+    requests_cancelled: int = 0
+    observed_ttft_ms: float | None = None
+    scheduler: dict[str, Any] | None = None
+    queue_seconds: float = 0.0
+    kv_seconds: float = 0.0

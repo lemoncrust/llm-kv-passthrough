@@ -6,6 +6,8 @@ This module provides the main CLI entry point for KV-Bench.
 
 from __future__ import annotations
 
+from typing import Any
+
 import typer
 from rich.console import Console
 from rich.table import Table
@@ -31,9 +33,14 @@ def serve(
     host: str | None = typer.Option(None, "--host", "-h", help="Host to bind to"),
     port: int | None = typer.Option(None, "--port", "-p", help="Port to listen on"),
     model: str | None = typer.Option(None, "--model", "-m", help="Model profile to emulate"),
-    gpu: str | None = typer.Option(None, "--gpu", "-g", help="GPU profile to emulate"),
+    gpu: str | None = typer.Option(None, "--gpu", "-g", help="Hardware profile label (V1 rates are configured separately)"),
+    profiles: str | None = typer.Option(None, "--profiles", help="YAML GPU/model catalog overrides"),
+    prefill_tps: float | None = typer.Option(None, "--prefill-tps", help="Aggregate prefill tokens/s for this engine"),
+    decode_tps: float | None = typer.Option(None, "--decode-tps", help="Aggregate decode tokens/s for this engine"),
+    max_active: int | None = typer.Option(None, "--max-active", help="Maximum active requests"),
+    max_pending: int | None = typer.Option(None, "--max-pending", help="Maximum queued requests"),
     server_type: str | None = typer.Option(
-        None, "--type", "-t", help="Server type: combined, prefill, decode, proxy"
+        None, "--type", "-t", help="V1 supports combined serving; other modes are deferred"
     ),
     lmcache_config: str | None = typer.Option(
         None,
@@ -45,7 +52,7 @@ def serve(
     trace_file: str | None = typer.Option(
         None,
         "--trace-file",
-        help="Record every KV storage operation (logical + file I/O) to this "
+        help="Record instrumented LMCache backend operations and file I/O to this "
         "JSONL file, for `kvbench trace2fio`",
     ),
     random_fill: bool | None = typer.Option(
@@ -53,7 +60,7 @@ def serve(
         "--random-fill/--no-random-fill",
         help="Fill KV tensors with incompressible random data (default: on)",
     ),
-    workers: int | None = typer.Option(None, "--workers", "-w", help="Number of worker processes"),
+    workers: int | None = typer.Option(None, "--workers", "-w", help="V1 requires 1 worker; use separate processes for replicas"),
     tp_size: int | None = typer.Option(
         None, "--tp-size", help="Tensor parallelism size for the emulated GPUs"
     ),
@@ -63,53 +70,59 @@ def serve(
     simple_timing: bool | None = typer.Option(
         None,
         "--simple-timing/--roofline-timing",
+        hidden=True,
         help="Use fixed ms/token timing instead of the roofline model",
     ),
     calibrated_timing: bool | None = typer.Option(
         None,
         "--calibrated-timing",
+        hidden=True,
         help="Scale the roofline by measured anchors (experiments + "
         "published benchmarks) for the emulated model/hardware",
     ),
     anchors_file: str | None = typer.Option(
         None,
         "--anchors",
+        hidden=True,
         help="YAML/JSON file or directory of extra timing anchors (measured TTFT/TPOT)",
     ),
     full_speed: bool | None = typer.Option(
         None,
         "--full-speed",
-        help="Skip the emulated GPU sleeps (serve as fast as the KV stack allows) "
-        "and report effective TTFT / tokens per second for the emulated model on /metrics",
+        help="Skip scheduler compute sleeps while preserving the same KV lifecycle",
     ),
     hot_kv_gb: float | None = typer.Option(
         None,
         "--hot-kv-gb",
+        hidden=True,
         help="Host-resident hot set of KV chunks in GB (default: the LMCache local CPU "
         "tier size; 0 disables it)",
     ),
     gpu_batching: bool | None = typer.Option(
         None,
         "--gpu-batching/--no-gpu-batching",
+        hidden=True,
         help="Model continuous batching: one engine step loop over all in-flight requests "
         "(shared decode steps, chunked prefill) instead of per-request timing",
     ),
-    eff_bw: float | None = typer.Option(None, "--eff-bw", help="Batching engine memory-bandwidth efficiency (default 0.90)"),
-    eff_flops: float | None = typer.Option(None, "--eff-flops", help="Batching engine compute efficiency (default 0.45)"),
-    token_budget: int | None = typer.Option(None, "--token-budget", help="Batching engine tokens per step (vLLM max_num_batched_tokens, default 8192)"),
-    frontend_us_per_token: float | None = typer.Option(None, "--frontend-us-per-token", help="Front-end time per prompt token before the engine, us (default 1.0)"),
-    kv_load_gb_s: float | None = typer.Option(None, "--kv-load-gbs", help="In-step cached-prefix load rate, GB/s (default 12; 0 disables)"),
-    chars_per_token: float | None = typer.Option(None, "--chars-per-token", help="Characters per simulated prompt token (default 4.0; fractional OK)"),
-    step_overhead_ms: float | None = typer.Option(None, "--step-overhead-ms", help="Fixed time added to every batching-engine step, ms (default 0)"),
-    weight_bytes_per_param: float | None = typer.Option(None, "--weight-bytes-per-param", help="Weight bytes per parameter read per step (default: model dtype)"),
+    eff_bw: float | None = typer.Option(None, "--eff-bw", hidden=True),
+    eff_flops: float | None = typer.Option(None, "--eff-flops", hidden=True),
+    token_budget: int | None = typer.Option(None, "--token-budget", hidden=True),
+    frontend_us_per_token: float | None = typer.Option(None, "--frontend-us-per-token", hidden=True),
+    kv_load_gb_s: float | None = typer.Option(None, "--kv-load-gbs", hidden=True),
+    chars_per_token: float | None = typer.Option(None, "--chars-per-token", help="UTF-8 bytes per synthetic token (default 4.0; fractional OK)"),
+    step_overhead_ms: float | None = typer.Option(None, "--step-overhead-ms", hidden=True),
+    weight_bytes_per_param: float | None = typer.Option(None, "--weight-bytes-per-param", hidden=True),
     prefill_ms_per_token: float | None = typer.Option(
         None,
         "--prefill-ms-per-token",
+        hidden=True,
         help="Prefill latency per token in ms (simple timing mode)",
     ),
     decode_ms_per_token: float | None = typer.Option(
         None,
         "--decode-ms-per-token",
+        hidden=True,
         help="Decode latency per token in ms (simple timing mode)",
     ),
     config: str | None = typer.Option(
@@ -117,13 +130,19 @@ def serve(
     ),
     reload: bool = typer.Option(False, "--reload", "-r", help="Enable auto-reload for development"),
 ) -> None:
-    """Start the KV-Bench server.
+    """Start a rate-based V1 combined engine.
 
-    Configuration precedence: explicit CLI flags > --config file >
-    KVBENCH_* environment variables > defaults.
+    Explicit flags override the --config file. Without a file, the base comes
+    from KVBENCH_* environment variables and defaults.
     """
     import os
     import tempfile
+
+    legacy = (simple_timing, calibrated_timing, anchors_file, hot_kv_gb, gpu_batching,
+              eff_bw, eff_flops, token_budget, frontend_us_per_token, kv_load_gb_s,
+              step_overhead_ms, weight_bytes_per_param, prefill_ms_per_token, decode_ms_per_token)
+    if any(value is not None for value in legacy):
+        raise typer.BadParameter("Legacy timing flags are offline only. Use --prefill-tps/--decode-tps and the V1 scheduler configuration.")
 
     console.print("[bold blue]KV-Bench Server[/bold blue]")
 
@@ -135,7 +154,17 @@ def serve(
         cfg = KVBenchConfig.from_env()
 
     # Overlay explicit CLI flags onto the base configuration
-    updates: dict = {}
+    updates: dict[str, Any] = {}
+    if profiles:
+        from pathlib import Path
+
+        updates["profiles_file"] = str(Path(profiles).resolve())
+    scheduler_updates = {key: value for key, value in {
+        "prefill_tokens_per_second": prefill_tps, "decode_tokens_per_second": decode_tps,
+        "max_active_requests": max_active, "max_pending_requests": max_pending,
+    }.items() if value is not None}
+    if scheduler_updates:
+        updates["scheduler"] = cfg.scheduler.model_copy(update=scheduler_updates)
     server_updates = {
         key: value
         for key, value in {
@@ -196,7 +225,10 @@ def serve(
         # Re-validate the merged configuration (model_copy skips validators)
         cfg = KVBenchConfig.model_validate(cfg.model_copy(update=updates).model_dump(mode="json"))
 
-    console.print("\n[green]Configuration loaded:[/green]")
+    cfg.validate_serving()
+    console.print("\n[green]Configuration loaded (rate-based fidelity V1):[/green]")
+    console.print(f"  Prefill rate: {cfg.scheduler.prefill_tokens_per_second:g} aggregate tokens/s")
+    console.print(f"  Decode rate: {cfg.scheduler.decode_tokens_per_second:g} aggregate tokens/s")
     console.print(f"  Instance ID: {cfg.instance_id}")
     console.print(f"  Server Type: {cfg.server.server_type}")
     console.print(f"  KV Stack: {cfg.kv.stack}")
@@ -204,20 +236,10 @@ def serve(
         f"  LMCache Config: {cfg.kv.lmcache_config_file or 'LMCACHE_* env / defaults'}"
     )
     console.print(f"  Model: {cfg.server.model_profile}")
-    console.print(f"  GPU: {cfg.gpu.gpu_profile}")
+    console.print(f"  Hardware label: {cfg.gpu.gpu_profile} (rates are authoritative)")
     if cfg.timing.full_speed:
-        console.print("  Timing: FULL SPEED (no GPU sleeps; effective TTFT/tok/s on /metrics)")
-    if cfg.timing.simple_mode:
-        console.print(
-            f"  Timing: simple ({cfg.timing.prefill_ms_per_token} ms/token prefill, "
-            f"{cfg.timing.decode_ms_per_token} ms/token decode)"
-        )
-    else:
-        console.print(
-            f"  Timing: roofline (TP={cfg.gpu.tp_size}, PP={cfg.timing.pp_size}, "
-            f"comm: TP {'on' if cfg.timing.include_tp_communication else 'off'}, "
-            f"PP {'on' if cfg.timing.include_pp_communication else 'off'})"
-        )
+        console.print("  Timing: FULL SPEED (scheduler sleeps disabled; KV lifecycle unchanged)")
+    console.print(f"  KV ranks: TP={cfg.gpu.tp_size}, PP={cfg.timing.pp_size}")
 
     # Persist the fully-resolved config and point the app factory at it.
     # This survives uvicorn worker processes and --reload subprocesses,
@@ -226,6 +248,16 @@ def serve(
         mode="w", suffix=".yaml", prefix="kvbench-config-", delete=False
     ) as tmp:
         resolved_config_path = tmp.name
+    # Resolve all file references before handing the config to a worker whose
+    # temporary config file is in a different directory.
+    from pathlib import Path
+
+    data = cfg.model_dump(mode="json")
+    for mapping, key in ((data, "profiles_file"), (data["kv"], "lmcache_config_file"),
+                         (data["kv"], "trace_file")):
+        if mapping.get(key):
+            mapping[key] = str(Path(mapping[key]).resolve())
+    cfg = KVBenchConfig.model_validate(data)
     cfg.to_yaml(resolved_config_path)
     os.environ["KVBENCH_CONFIG_FILE"] = resolved_config_path
 
@@ -235,6 +267,10 @@ def serve(
     console.print("[dim]Press Ctrl+C to stop[/dim]\n")
 
     # Start uvicorn server
+    # Fidelity 1 always uses LMCache's CPU fallback, including on GPU-equipped
+    # hosts. Set visibility before Torch/LMCache are imported by the worker.
+    for variable in ("CUDA_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES"):
+        os.environ[variable] = ""
     import uvicorn
 
     try:
@@ -284,7 +320,7 @@ def warmup(
 
     import httpx
 
-    body: dict = {
+    body: dict[str, Any] = {
         "fill_factor": fill_factor,
         "seq_tokens": seq_tokens,
         "concurrency": concurrency,

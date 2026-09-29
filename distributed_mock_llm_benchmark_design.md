@@ -1,3 +1,9 @@
+# Historical design — not an implemented system description
+
+The original design below predates the rate-based V1 scope. Its sample code,
+storage implementations and distribution claims are not current APIs.
+See [docs/V1_PLAN.md](docs/V1_PLAN.md) for the architect's updated intent.
+
 # Distributed Mock LLM Benchmarking System
 
 ## Design Document for KV Cache Performance Testing

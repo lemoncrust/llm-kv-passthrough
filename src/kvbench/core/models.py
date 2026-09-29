@@ -1,445 +1,174 @@
-"""
-Model Profile Definitions for KV-Bench.
+"""Model schema, KV byte geometry, and a file-backed model catalog.
 
-This module provides LLM model profiles used for KV cache sizing and
-latency emulation calculations. Each profile contains the architectural
-parameters needed to compute memory requirements and FLOPs.
-
-The profiles include:
-- Llama 3.1 family (8B, 70B, 405B)
-- Qwen 2.5 family (7B, 72B)
-- Mistral family
+V1 requires KV geometry, not model weights or an executable attention kernel.
+The analytical parameter estimates remain available for offline exploration.
 """
 
-from __future__ import annotations
+from dataclasses import asdict, dataclass
+from math import isfinite
+from pathlib import Path
+from typing import Any, Literal
 
-from dataclasses import dataclass
-from typing import Literal
+from kvbench.core.catalog import BUILTIN_CATALOG, read_catalog
 
 
 @dataclass(frozen=True)
 class ModelProfile:
-    """Hardware profile for an LLM model.
-
-    This dataclass contains the architectural parameters needed for
-    KV cache sizing and latency calculations.
-
-    Attributes:
-        name: Human-readable name of the model.
-        layers: Number of transformer layers.
-        hidden: Hidden dimension size.
-        kv_heads: Number of KV attention heads (GQA).
-        num_heads: Total number of attention heads.
-        intermediate: FFN intermediate dimension.
-        vocab_size: Vocabulary size.
-        max_seq_len: Maximum sequence length.
-        head_dim: Dimension per attention head (computed from hidden/num_heads).
-        dtype: Default data type for weights and KV cache.
-    """
-
     name: str
     layers: int
     hidden: int
     kv_heads: int
     intermediate: int
     num_heads: int | None = None
-    vocab_size: int = 128256  # Common Llama 3 vocab size
-    max_seq_len: int = 131072  # 128k context
+    vocab_size: int = 128256
+    max_seq_len: int = 131072
     dtype: Literal["fp16", "bf16", "fp8"] = "bf16"
-    # Hybrid-attention models (e.g. Qwen3.8): only some layers keep
-    # per-token KV cache; the rest use constant-size linear-attention state.
-    # None = all layers are full attention.
+    kv_dtype: Literal["fp16", "bf16", "fp8"] | None = None
     kv_layers: int | None = None
-    # Explicit per-head dimension for models where head_dim != hidden/num_heads
-    # (e.g. Qwen3.8-27B: hidden 5120, 24 heads, head_dim 256). None = derive.
     head_dim_override: int | None = None
-    # Explicit parameter count in billions for models where the dense-formula
-    # estimate is wrong (MoE: use ACTIVE params — that is what the roofline's
-    # compute and per-token weight traffic see). None = derive from dims.
     params_billions_override: float | None = None
+    total_params_billions: float | None = None
+    # MLA is a single replicated latent, not sharded K/V attention heads.
+    kv_latent_dim: int | None = None
 
     def __post_init__(self) -> None:
-        """Set num_heads if not specified."""
+        if not isinstance(self.name, str) or not self.name.strip():
+            raise ValueError("Model name must be nonempty text")
         if self.num_heads is None:
-            # Default: same as hidden // head_dim where head_dim = 128
-            object.__setattr__(self, "num_heads", self.hidden // 128)
+            object.__setattr__(self, "num_heads", max(1, self.hidden // 128))
+        for field in ("layers", "hidden", "kv_heads", "intermediate", "num_heads",
+                      "vocab_size", "max_seq_len", "kv_layers", "head_dim_override", "kv_latent_dim"):
+            value = getattr(self, field)
+            if value is not None and (type(value) is not int or value <= 0):
+                raise ValueError(f"{field} must be a positive integer")
+        if self.effective_kv_layers > self.layers:
+            raise ValueError("kv_layers cannot exceed layers")
+        for value in (self.dtype, self.effective_kv_dtype):
+            if value not in ("fp16", "bf16", "fp8"):
+                raise ValueError(f"Unsupported dtype: {value}")
+        for value in (self.params_billions_override, self.total_params_billions):
+            if value is not None and (not isfinite(value) or value <= 0):
+                raise ValueError("Parameter counts must be finite and positive")
+        assert self.num_heads is not None
+        if not self.head_dim_override and self.hidden % self.num_heads:
+            raise ValueError("hidden must divide num_heads unless head_dim_override is provided")
 
     @property
     def head_dim(self) -> int:
-        """Dimension per attention head (explicit override or hidden/num_heads)."""
-        if self.head_dim_override is not None:
-            return self.head_dim_override
-        if self.num_heads is None:
-            return 128  # Default head dimension
-        return self.hidden // self.num_heads
-
-    @property
-    def effective_kv_layers(self) -> int:
-        """Layers that accrue per-token KV cache (all layers unless hybrid)."""
-        return self.kv_layers if self.kv_layers is not None else self.layers
+        assert self.num_heads is not None
+        return self.head_dim_override or self.hidden // self.num_heads
 
     @property
     def kv_head_dim(self) -> int:
-        """Compute KV dimension per head (same as head_dim for standard models)."""
         return self.head_dim
 
     @property
+    def effective_kv_layers(self) -> int:
+        return self.layers if self.kv_layers is None else self.kv_layers
+
+    @property
+    def effective_kv_dtype(self) -> str:
+        return self.kv_dtype or self.dtype
+
+    @property
     def bytes_per_element(self) -> int:
-        """Get bytes per element based on dtype."""
-        dtype_sizes = {"fp16": 2, "bf16": 2, "fp8": 1}
-        return dtype_sizes[self.dtype]
+        return 1 if self.dtype == "fp8" else 2
+
+    @property
+    def kv_bytes_per_element(self) -> int:
+        return 1 if self.effective_kv_dtype == "fp8" else 2
 
     @property
     def kv_cache_bytes_per_token(self) -> int:
-        """Calculate KV cache size in bytes per token per layer.
-
-        For each token, we store K and V tensors:
-        - K: [kv_heads, head_dim] = kv_heads * head_dim elements
-        - V: [kv_heads, head_dim] = kv_heads * head_dim elements
-        - Total: 2 * kv_heads * head_dim * bytes_per_element
-
-        Returns:
-            Bytes per token per layer.
-        """
-        return 2 * self.kv_heads * self.head_dim * self.bytes_per_element
+        elements = self.kv_latent_dim or 2 * self.kv_heads * self.head_dim
+        return elements * self.kv_bytes_per_element
 
     @property
     def total_kv_cache_bytes_per_token(self) -> int:
-        """Calculate total KV cache size in bytes per token (all layers).
-
-        Returns:
-            Total bytes per token across all layers.
-        """
         return self.kv_cache_bytes_per_token * self.effective_kv_layers
 
     def kv_cache_size_bytes(self, num_tokens: int) -> int:
-        """Calculate total KV cache size for a given number of tokens.
-
-        Args:
-            num_tokens: Number of tokens in the sequence.
-
-        Returns:
-            Total KV cache size in bytes.
-        """
         return self.total_kv_cache_bytes_per_token * num_tokens
 
     def kv_cache_size_gb(self, num_tokens: int) -> float:
-        """Calculate total KV cache size in GB for a given number of tokens.
+        return self.kv_cache_size_bytes(num_tokens) / 1024**3
 
-        Args:
-            num_tokens: Number of tokens in the sequence.
+    def rank_layout(self, tp_size: int = 1, pp_size: int = 1) -> list[dict[str, int]]:
+        """Byte geometry per logical rank; PP partitions cache-bearing layers.
 
-        Returns:
-            Total KV cache size in GB.
+        GQA heads shard for TP <= heads, and replicate for TP > heads. MLA
+        latent KV replicates on every TP rank. No resharding/collectives run.
         """
-        return self.kv_cache_size_bytes(num_tokens) / (1024**3)
+        if tp_size < 1 or pp_size < 1 or pp_size > self.effective_kv_layers:
+            raise ValueError("Rank counts must be positive; PP cannot exceed KV layers")
+        if not self.kv_latent_dim and (
+            (tp_size <= self.kv_heads and self.kv_heads % tp_size) or (
+                tp_size > self.kv_heads and tp_size % self.kv_heads
+            )
+        ):
+            raise ValueError("TP must divide KV heads or be a multiple of KV heads")
+        heads = max(1, self.kv_heads // tp_size)
+        # Classic LMCache uses a two-plane payload. MLA's latent is represented
+        # by two halves solely for byte sizing (not native MLA interoperability).
+        if self.kv_latent_dim and self.kv_latent_dim % 2:
+            raise ValueError("Classic byte-layout adapter requires an even MLA latent dimension")
+        width = self.kv_latent_dim // 2 if self.kv_latent_dim else heads * self.head_dim
+        result = []
+        start = 0
+        for pp in range(pp_size):
+            layers = self.effective_kv_layers // pp_size + (pp < self.effective_kv_layers % pp_size)
+            for tp in range(tp_size):
+                result.append({"rank": pp * tp_size + tp, "tp_rank": tp, "pp_rank": pp,
+                               "layer_start": start, "layers": layers, "width": width,
+                               "bytes_per_token": 2 * layers * width * self.kv_bytes_per_element})
+            start += layers
+        return result
 
     @property
     def estimated_params_billions(self) -> float:
-        """Estimate total model parameters in billions.
-
-        This is an approximation based on architecture dimensions.
-        The actual count may vary slightly based on implementation details.
-
-        Returns:
-            Estimated parameters in billions.
-        """
         if self.params_billions_override is not None:
             return self.params_billions_override
-
-        # Embedding: vocab_size * hidden
-        embedding_params = self.vocab_size * self.hidden
-
-        # Per layer:
-        # - QKV projection: hidden * (num_heads + 2 * kv_heads) * head_dim
-        # - Output projection: hidden * hidden
-        # - FFN: hidden * intermediate * 3 (up, gate, down projections)
-        # - Layer norms: hidden * 2
         assert self.num_heads is not None
-        qkv_params = self.hidden * (self.num_heads + 2 * self.kv_heads) * self.head_dim
-        output_params = self.hidden * self.hidden
-        ffn_params = self.hidden * self.intermediate * 3
-        norm_params = self.hidden * 2
-
-        per_layer_params = qkv_params + output_params + ffn_params + norm_params
-        total_layer_params = per_layer_params * self.layers
-
-        # Final layer norm + LM head
-        final_params = self.hidden + self.hidden * self.vocab_size
-
-        total_params = embedding_params + total_layer_params + final_params
-        return total_params / 1e9
+        qkv = self.hidden * (self.num_heads + 2 * self.kv_heads) * self.head_dim
+        output = self.num_heads * self.head_dim * self.hidden
+        per_layer = qkv + output + self.hidden * self.intermediate * 3 + self.hidden * 2
+        return (2 * self.vocab_size * self.hidden + per_layer * self.layers + self.hidden) / 1e9
 
     @property
     def model_size_gb(self) -> float:
-        """Estimate model size in GB based on dtype.
-
-        Returns:
-            Estimated model size in GB.
-        """
-        return self.estimated_params_billions * self.bytes_per_element
+        return (self.total_params_billions or self.estimated_params_billions) * self.bytes_per_element
 
 
-# Model Profile Registry
-# These profiles are based on official model specifications
-MODEL_PROFILES: dict[str, ModelProfile] = {
-    # Llama 3.1 family
-    "llama-3.1-8b": ModelProfile(
-        name="Llama 3.1 8B",
-        layers=32,
-        hidden=4096,
-        kv_heads=8,
-        num_heads=32,
-        intermediate=14336,
-        vocab_size=128256,
-        max_seq_len=131072,
-    ),
-    "llama-3.1-70b": ModelProfile(
-        name="Llama 3.1 70B",
-        layers=80,
-        hidden=8192,
-        kv_heads=8,
-        num_heads=64,
-        intermediate=28672,
-        vocab_size=128256,
-        max_seq_len=131072,
-    ),
-    "llama-3.1-405b": ModelProfile(
-        name="Llama 3.1 405B",
-        layers=126,
-        hidden=16384,
-        kv_heads=8,
-        num_heads=128,
-        intermediate=53248,
-        vocab_size=128256,
-        max_seq_len=131072,
-    ),
-    # Llama 3.2 family
-    "llama-3.2-1b": ModelProfile(
-        name="Llama 3.2 1B",
-        layers=16,
-        hidden=2048,
-        kv_heads=8,
-        num_heads=32,
-        intermediate=8192,
-        vocab_size=128256,
-        max_seq_len=131072,
-    ),
-    "llama-3.2-3b": ModelProfile(
-        name="Llama 3.2 3B",
-        layers=28,
-        hidden=3072,
-        kv_heads=8,
-        num_heads=24,
-        intermediate=8192,
-        vocab_size=128256,
-        max_seq_len=131072,
-    ),
-    # Llama 4 family (MoE; KV depends only on the GQA attention config —
-    # the dense-formula param estimate under-reports total params and the
-    # roofline sees ~active-expert compute, which is the relevant figure)
-    "llama-4-scout": ModelProfile(
-        name="Llama 4 Scout 17B-16E",
-        layers=48,
-        hidden=5120,
-        kv_heads=8,
-        num_heads=40,
-        head_dim_override=128,
-        intermediate=16384,          # intermediate_size_mlp
-        vocab_size=202048,
-        max_seq_len=10485760,        # 10M context
-    ),
-    # DeepSeek V3.2 (MLA). MLA caches ONE 576-element latent per layer per
-    # token (kv_lora_rank 512 + qk_rope_head_dim 64), not separate K and V.
-    # The standard formula multiplies by 2 for K+V, so head_dim is encoded
-    # as 576/2 = 288 to yield the correct 1,152 B/layer/token at bf16
-    # (61 layers -> 68.6 KiB/token). head_dim here is a cache-math encoding,
-    # not the attention geometry.
-    "deepseek-v3.2": ModelProfile(
-        name="DeepSeek V3.2 (MLA)",
-        layers=61,
-        hidden=7168,
-        kv_heads=1,
-        num_heads=128,
-        head_dim_override=288,       # see note above (MLA single-latent encoding)
-        intermediate=18432,
-        vocab_size=129280,
-        max_seq_len=163840,
-    ),
-    # Qwen 3.8 family
-    "qwen3.8-27b": ModelProfile(
-        name="Qwen3.8 27B",
-        layers=64,               # total transformer layers (compute/roofline)
-        kv_layers=16,            # only the full-attention layers hold per-token KV
-        hidden=5120,
-        kv_heads=4,
-        num_heads=24,
-        head_dim_override=256,   # config.json head_dim (not hidden/num_heads)
-        intermediate=17408,
-        vocab_size=248320,
-        max_seq_len=262144,
-        # Note: the 48 linear-attention layers keep ~72 MiB of constant
-        # per-sequence state that never enters the paged KV cache and is
-        # therefore not part of the LMCache storage workload.
-    ),
-    # Qwen 2.5 family
-    "gpt-oss-120b": ModelProfile(
-        name="GPT-OSS 120B (MoE, 5.1B active)",
-        layers=36,
-        hidden=2880,
-        kv_heads=8,
-        num_heads=64,
-        head_dim_override=64,
-        intermediate=2880,
-        vocab_size=201088,
-        max_seq_len=131072,
-        dtype="fp8",  # closest supported to the published FP4 serving point
-        # MoE: 116.8B total / ~5.1B active per token. The roofline's compute
-        # and per-token weight traffic follow ACTIVE params; capacity
-        # planning for full weights must use the total separately.
-        params_billions_override=5.1,
-    ),
-    "gpt-oss-20b": ModelProfile(
-        name="GPT-OSS 20B (MoE, 3.6B active)",
-        layers=24,
-        hidden=2880,
-        kv_heads=8,
-        num_heads=64,
-        head_dim_override=64,
-        intermediate=2880,
-        vocab_size=201088,
-        max_seq_len=131072,
-        dtype="bf16",  # KV cache is bf16 even though the weights are MXFP4
-        # 20.9B total / ~3.6B active per token. Half the layers use a 128-token
-        # sliding window, but the real gb10 capture (2026-09-27, vLLM 0.27.1
-        # + LMCache 0.5.4) stored 12 MiB per 256-token chunk = 48 KiB/token,
-        # i.e. full bf16 KV for all 24 layers: 2 x 8 x 64 x 2 B x 24.
-        params_billions_override=3.6,
-    ),
-    "qwen-2.5-7b": ModelProfile(
-        name="Qwen 2.5 7B",
-        layers=28,
-        hidden=3584,
-        kv_heads=4,
-        num_heads=28,
-        intermediate=18944,
-        vocab_size=152064,
-        max_seq_len=131072,
-    ),
-    "qwen-2.5-72b": ModelProfile(
-        name="Qwen 2.5 72B",
-        layers=80,
-        hidden=8192,
-        kv_heads=8,
-        num_heads=64,
-        intermediate=29568,
-        vocab_size=152064,
-        max_seq_len=131072,
-    ),
-    # Mistral family
-    "mistral-7b": ModelProfile(
-        name="Mistral 7B",
-        layers=32,
-        hidden=4096,
-        kv_heads=8,
-        num_heads=32,
-        intermediate=14336,
-        vocab_size=32000,
-        max_seq_len=32768,
-    ),
-    "mixtral-8x7b": ModelProfile(
-        name="Mixtral 8x7B",
-        layers=32,
-        hidden=4096,
-        kv_heads=8,
-        num_heads=32,
-        intermediate=14336,  # Per expert
-        vocab_size=32000,
-        max_seq_len=32768,
-    ),
-}
+def load_model_profiles(path: Path = BUILTIN_CATALOG) -> dict[str, ModelProfile]:
+    return {name: ModelProfile(**spec) for name, spec in read_catalog(path).get("models", {}).items()}
+
+
+MODEL_PROFILES = load_model_profiles()
 
 
 def get_model_profile(name: str) -> ModelProfile:
-    """Get a model profile by name.
-
-    Args:
-        name: Name of the model profile (e.g., "llama-3.1-8b").
-
-    Returns:
-        The ModelProfile for the specified model.
-
-    Raises:
-        KeyError: If the model profile is not found.
-    """
     if name not in MODEL_PROFILES:
-        available = ", ".join(sorted(MODEL_PROFILES.keys()))
-        raise KeyError(f"Unknown model profile: {name}. Available profiles: {available}")
+        raise KeyError(f"Unknown model profile: {name}. Available profiles: {', '.join(list_model_profiles())}")
     return MODEL_PROFILES[name]
 
 
 def list_model_profiles() -> list[str]:
-    """List all available model profile names.
-
-    Returns:
-        List of model profile names.
-    """
-    return sorted(MODEL_PROFILES.keys())
+    return sorted(MODEL_PROFILES)
 
 
-def get_model_profile_info(name: str) -> dict:
-    """Get detailed information about a model profile.
-
-    Args:
-        name: Name of the model profile.
-
-    Returns:
-        Dictionary with model profile information.
-    """
-    profile = get_model_profile(name)
-    return {
-        "name": profile.name,
-        "layers": profile.layers,
-        "hidden": profile.hidden,
-        "kv_heads": profile.kv_heads,
-        "num_heads": profile.num_heads,
-        "intermediate": profile.intermediate,
-        "vocab_size": profile.vocab_size,
-        "max_seq_len": profile.max_seq_len,
-        "head_dim": profile.head_dim,
-        "dtype": profile.dtype,
-        "kv_cache_bytes_per_token": profile.total_kv_cache_bytes_per_token,
-        "estimated_params_billions": round(profile.estimated_params_billions, 2),
-        "model_size_gb": round(profile.model_size_gb, 2),
-    }
+def get_model_profile_info(name: str) -> dict[str, Any]:
+    p = get_model_profile(name)
+    return {**asdict(p), "head_dim": p.head_dim,
+            "kv_cache_bytes_per_token": p.total_kv_cache_bytes_per_token,
+            "estimated_params_billions": round(p.estimated_params_billions, 2),
+            "model_size_gb": round(p.model_size_gb, 2)}
 
 
-def calculate_kv_cache_requirements(
-    model_name: str,
-    max_batch_size: int,
-    max_seq_len: int | None = None,
-) -> dict:
-    """Calculate KV cache memory requirements for a model.
-
-    Args:
-        model_name: Name of the model profile.
-        max_batch_size: Maximum batch size.
-        max_seq_len: Maximum sequence length (uses model default if not specified).
-
-    Returns:
-        Dictionary with memory requirements.
-    """
-    profile = get_model_profile(model_name)
-    seq_len = max_seq_len or profile.max_seq_len
-
-    per_request_bytes = profile.kv_cache_size_bytes(seq_len)
-    total_bytes = per_request_bytes * max_batch_size
-
-    return {
-        "model": model_name,
-        "max_batch_size": max_batch_size,
-        "max_seq_len": seq_len,
-        "per_request_gb": per_request_bytes / (1024**3),
-        "total_gb": total_bytes / (1024**3),
-        "bytes_per_token": profile.total_kv_cache_bytes_per_token,
-    }
+def calculate_kv_cache_requirements(model_name: str, max_batch_size: int,
+                                    max_seq_len: int | None = None) -> dict[str, Any]:
+    p = get_model_profile(model_name)
+    seq = max_seq_len or p.max_seq_len
+    size = p.kv_cache_size_bytes(seq)
+    return {"model": model_name, "max_batch_size": max_batch_size, "max_seq_len": seq,
+            "per_request_gb": size / 1024**3, "total_gb": size * max_batch_size / 1024**3,
+            "bytes_per_token": p.total_kv_cache_bytes_per_token}

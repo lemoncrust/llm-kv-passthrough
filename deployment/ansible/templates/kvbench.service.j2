@@ -1,10 +1,7 @@
 [Unit]
 Description=KV-Bench Server ({{ kvbench_instance_id | default(inventory_hostname) }})
-Documentation=https://github.com/your-org/kvbench
+Documentation=https://github.com/wvaske/llm-kv-passthrough
 After=network.target
-{% if kvbench_storage == 'redis' %}
-Wants=redis.service
-{% endif %}
 
 [Service]
 Type=simple
@@ -14,6 +11,9 @@ WorkingDirectory={{ kvbench_home | default('/opt/kvbench') }}
 
 # Environment
 Environment="PATH={{ kvbench_home | default('/opt/kvbench') }}/venv/bin:/usr/local/bin:/usr/bin:/bin"
+Environment="MALLOC_ARENA_MAX=2" "OMP_NUM_THREADS=1" "OPENBLAS_NUM_THREADS=1"
+Environment="XDG_CACHE_HOME=/var/cache/kvbench"
+CacheDirectory=kvbench
 {% if kvbench_extra_env is defined %}
 {% for key, value in kvbench_extra_env.items() %}
 Environment="{{ key }}={{ value }}"
@@ -22,7 +22,6 @@ Environment="{{ key }}={{ value }}"
 
 # Command
 ExecStart={{ kvbench_home | default('/opt/kvbench') }}/venv/bin/kvbench serve --config {{ kvbench_config_dir | default('/etc/kvbench') }}/config.yaml
-ExecReload=/bin/kill -HUP $MAINPID
 
 # Restart policy
 Restart=always
@@ -43,9 +42,7 @@ LimitNOFILE=65535
 {% if kvbench_limit_nproc is defined %}
 LimitNPROC={{ kvbench_limit_nproc }}
 {% endif %}
-{% if kvbench_memory_limit is defined %}
-MemoryLimit={{ kvbench_memory_limit }}
-{% endif %}
+MemoryMax={{ kvbench_memory_limit | default('2G') }}
 
 # Security hardening
 NoNewPrivileges=yes
@@ -53,11 +50,8 @@ ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
 ReadWritePaths={{ kvbench_data_dir | default('/var/lib/kvbench') }} {{ kvbench_log_dir | default('/var/log/kvbench') }}
-{% if kvbench_storage in ['nfs', 'weka'] %}
-ReadWritePaths={{ kvbench_filesystem_path | default('/mnt/kvbench') }}
-{% endif %}
-{% if kvbench_storage == 'local_disk' %}
-ReadWritePaths={{ kvbench_local_disk_path | default('/var/lib/kvbench/cache') }}
+{% if lmcache_local_disk_path is defined %}
+ReadWritePaths={{ lmcache_local_disk_path }}
 {% endif %}
 
 [Install]

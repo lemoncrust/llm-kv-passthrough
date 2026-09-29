@@ -1,3 +1,8 @@
+# Historical assessment — not current project status
+
+This assessment describes the July 2026 code and is retained as history.
+Current implementation/acceptance: [docs/V1_PLAN.md](docs/V1_PLAN.md).
+
 # KV-Bench: Project Status & Production Release Plan
 
 **Assessment date:** 2026-07-08

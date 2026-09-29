@@ -1,290 +1,85 @@
-"""End-to-end tests for KV-Bench server."""
+"""ASGI contract tests. Real disk workloads live in tests/integration/."""
 
-from __future__ import annotations
-
-from collections.abc import AsyncGenerator
-from contextlib import asynccontextmanager
+import json
 
 import pytest
-from httpx import ASGITransport, AsyncClient
+from fastapi.testclient import TestClient
 
 import kvbench.servers.app as app_module
-from kvbench.core.config import (
-    GPUEmulationConfig,
-    KVBenchConfig,
-    ServerConfig,
-)
-from kvbench.servers.app import KVBenchApp
+from kvbench.core.config import KVBenchConfig, MetricsConfig, SchedulerConfig, TimingConfig
+from kvbench.servers.app import create_app
 from tests.fakes import FakeKVStack
 
-
-@asynccontextmanager
-async def create_test_client(config: KVBenchConfig) -> AsyncGenerator[AsyncClient, None]:
-    """Create a test client with proper lifespan management.
-
-    Uses the in-memory FakeKVStack; the real LMCache stack is exercised by
-    tests/integration/test_lmcache_stack.py.
-    """
-    kvbench_app = KVBenchApp(config)
-    original = app_module.create_kv_stack
-    app_module.create_kv_stack = lambda _config: FakeKVStack()
-    try:
-        # Manually call startup
-        await kvbench_app._startup()
-    finally:
-        app_module.create_kv_stack = original
-    try:
-        transport = ASGITransport(app=kvbench_app.app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
-            yield client
-    finally:
-        # Manually call shutdown
-        await kvbench_app._shutdown()
+pytestmark = pytest.mark.e2e
 
 
-class TestServerE2E:
-    """End-to-end tests for the KV-Bench server."""
-
-    @pytest.fixture
-    def config(self) -> KVBenchConfig:
-        """Create a test configuration."""
-        return KVBenchConfig(
-            instance_id="e2e-test",
-            server=ServerConfig(
-                host="127.0.0.1",
-                port=8000,
-                server_type="combined",
-                model_profile="llama-3.1-8b",
-            ),
-            gpu=GPUEmulationConfig(gpu_profile="H100_SXM"),
-        )
-
-    @pytest.fixture
-    async def client(self, config: KVBenchConfig) -> AsyncGenerator[AsyncClient, None]:
-        """Create a test client."""
-        async with create_test_client(config) as client:
-            yield client
-
-    @pytest.mark.asyncio
-    async def test_health_check(self, client: AsyncClient) -> None:
-        """Test health check endpoint."""
-        response = await client.get("/health")
-        assert response.status_code == 200
-        data = response.json()
-        assert data["status"] == "healthy"
-        assert data["server_type"] == "combined"
-
-    @pytest.mark.asyncio
-    async def test_metrics(self, client: AsyncClient) -> None:
-        """Test metrics endpoint."""
-        response = await client.get("/stats")
-        assert response.status_code == 200
-        data = response.json()
-        assert "requests_total" in data
-        assert "cache_hits" in data
-
-    @pytest.mark.asyncio
-    async def test_list_models(self, client: AsyncClient) -> None:
-        """Test model listing endpoint."""
-        response = await client.get("/v1/models")
-        assert response.status_code == 200
-        data = response.json()
-        assert data["object"] == "list"
-        assert len(data["data"]) > 0
-        assert data["data"][0]["id"] == "llama-3.1-8b"
-
-    @pytest.mark.asyncio
-    async def test_chat_completion_non_streaming(
-        self, client: AsyncClient
-    ) -> None:
-        """Test non-streaming chat completion."""
-        response = await client.post(
-            "/v1/chat/completions",
-            json={
-                "model": "llama-3.1-8b",
-                "messages": [{"role": "user", "content": "Hello, world!"}],
-                "max_tokens": 10,
-                "stream": False,
-            },
-        )
-        assert response.status_code == 200
-        data = response.json()
-        assert data["object"] == "chat.completion"
-        assert data["model"] == "llama-3.1-8b"
-        assert len(data["choices"]) > 0
-        assert data["choices"][0]["message"]["role"] == "assistant"
-        assert data["usage"]["prompt_tokens"] > 0
-        assert data["usage"]["completion_tokens"] == 10
-
-    @pytest.mark.asyncio
-    async def test_chat_completion_streaming(
-        self, client: AsyncClient
-    ) -> None:
-        """Test streaming chat completion."""
-        async with client.stream(
-            "POST",
-            "/v1/chat/completions",
-            json={
-                "model": "llama-3.1-8b",
-                "messages": [{"role": "user", "content": "Hello!"}],
-                "max_tokens": 5,
-                "stream": True,
-            },
-        ) as response:
-            assert response.status_code == 200
-            assert response.headers["content-type"] == "text/event-stream; charset=utf-8"
-
-            chunks = []
-            async for line in response.aiter_lines():
-                if line.startswith("data:"):
-                    chunks.append(line)
-
-            # Should have start chunk + content chunks + end chunk + [DONE]
-            assert len(chunks) >= 3
-            assert any("[DONE]" in chunk for chunk in chunks)
-
-    @pytest.mark.asyncio
-    async def test_multiple_requests(self, client: AsyncClient) -> None:
-        """Test multiple sequential requests."""
-        for i in range(3):
-            response = await client.post(
-                "/v1/chat/completions",
-                json={
-                    "model": "llama-3.1-8b",
-                    "messages": [{"role": "user", "content": f"Request {i}"}],
-                    "max_tokens": 5,
-                },
-            )
-            assert response.status_code == 200
-
-        # Check metrics updated
-        metrics = await client.get("/stats")
-        assert metrics.json()["requests_total"] == 3
-
-    @pytest.mark.asyncio
-    async def test_cache_hit_behavior(self, client: AsyncClient) -> None:
-        """Test that repeated prompts result in cache hits."""
-        # First request - should be cache miss
-        await client.post(
-            "/v1/chat/completions",
-            json={
-                "model": "llama-3.1-8b",
-                "messages": [{"role": "user", "content": "Hello world"}],
-                "max_tokens": 5,
-            },
-        )
-
-        metrics1 = await client.get("/stats")
-        initial_misses = metrics1.json()["cache_misses"]
-
-        # Second request with same prefix - should be cache hit
-        await client.post(
-            "/v1/chat/completions",
-            json={
-                "model": "llama-3.1-8b",
-                "messages": [{"role": "user", "content": "Hello world, how are you?"}],
-                "max_tokens": 5,
-            },
-        )
-
-        metrics2 = await client.get("/stats")
-        # Should have some cache hits now
-        assert metrics2.json()["cache_hits"] > 0 or metrics2.json()["cache_misses"] >= initial_misses
+@pytest.fixture
+def client(monkeypatch):
+    monkeypatch.setattr(app_module, "create_kv_stack", lambda _: FakeKVStack(16))
+    cfg = KVBenchConfig(timing=TimingConfig(full_speed=True), scheduler=SchedulerConfig(max_request_bytes=8192))
+    with TestClient(create_app(cfg)) as client:
+        yield client
 
 
-class TestPrefillServerE2E:
-    """End-to-end tests for the prefill server."""
-
-    @pytest.fixture
-    def config(self) -> KVBenchConfig:
-        """Create a prefill server configuration."""
-        return KVBenchConfig(
-            instance_id="prefill-test",
-            server=ServerConfig(server_type="prefill"),
-        )
-
-    @pytest.fixture
-    async def client(self, config: KVBenchConfig) -> AsyncGenerator[AsyncClient, None]:
-        """Create a test client."""
-        async with create_test_client(config) as client:
-            yield client
-
-    @pytest.mark.asyncio
-    async def test_prefill_health(self, client: AsyncClient) -> None:
-        """Test prefill server health check."""
-        response = await client.get("/health")
-        assert response.status_code == 200
-        assert response.json()["server_type"] == "prefill"
+def request(**updates):
+    return {"model": "llama-3.1-8b", "messages": [{"role": "user", "content": "hello " * 100}],
+            "max_completion_tokens": 40, **updates}
 
 
-class TestDecodeServerE2E:
-    """End-to-end tests for the decode server."""
-
-    @pytest.fixture
-    def config(self) -> KVBenchConfig:
-        """Create a decode server configuration."""
-        return KVBenchConfig(
-            instance_id="decode-test",
-            server=ServerConfig(server_type="decode"),
-        )
-
-    @pytest.fixture
-    async def client(self, config: KVBenchConfig) -> AsyncGenerator[AsyncClient, None]:
-        """Create a test client."""
-        async with create_test_client(config) as client:
-            yield client
-
-    @pytest.mark.asyncio
-    async def test_decode_health(self, client: AsyncClient) -> None:
-        """Test decode server health check."""
-        response = await client.get("/health")
-        assert response.status_code == 200
-        assert response.json()["server_type"] == "decode"
-
-    @pytest.mark.asyncio
-    async def test_decode_streaming(self, client: AsyncClient) -> None:
-        """Test decode server streaming."""
-        async with client.stream(
-            "POST",
-            "/v1/chat/completions",
-            json={
-                "model": "llama-3.1-8b",
-                "messages": [{"role": "user", "content": "Test"}],
-                "max_tokens": 5,
-                "stream": True,
-            },
-        ) as response:
-            assert response.status_code == 200
-
-            chunks = []
-            async for line in response.aiter_lines():
-                if line.startswith("data:"):
-                    chunks.append(line)
-
-            assert len(chunks) >= 3
+def test_non_streaming_usage_and_length(client):
+    response = client.post("/v1/chat/completions", json=request())
+    assert response.status_code == 200
+    data = response.json()
+    assert data["usage"]["prompt_tokens"] > 100
+    assert data["usage"]["completion_tokens"] == 40
+    assert data["choices"][0]["finish_reason"] == "length"
+    assert client.get("/stats").json()["requests_success"] == 1
 
 
-class TestProxyServerE2E:
-    """End-to-end tests for the proxy server."""
+def test_streaming_usage_matches_nonstreaming(client):
+    normal = client.post("/v1/chat/completions", json=request()).json()
+    stream = client.post("/v1/chat/completions", json=request(stream=True, stream_options={"include_usage": True}))
+    assert stream.text.endswith("data: [DONE]\n\n")
+    events = [json.loads(line[6:]) for line in stream.text.splitlines()
+              if line.startswith("data: {")]
+    for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+        assert events[-1]["usage"][key] == normal["usage"][key]
+    assert normal["usage"]["prompt_tokens_details"]["cached_tokens"] == 0
+    assert events[-1]["usage"]["prompt_tokens_details"]["cached_tokens"] > 0
+    text = "".join(c["delta"].get("content") or "" for e in events for c in e["choices"])
+    assert text == normal["choices"][0]["message"]["content"]
 
-    @pytest.fixture
-    def config(self) -> KVBenchConfig:
-        """Create a proxy server configuration."""
-        return KVBenchConfig(
-            instance_id="proxy-test",
-            server=ServerConfig(server_type="proxy"),
-        )
 
-    @pytest.fixture
-    async def client(self, config: KVBenchConfig) -> AsyncGenerator[AsyncClient, None]:
-        """Create a test client."""
-        async with create_test_client(config) as client:
-            yield client
+def test_shared_prefix_has_real_hits_in_server_contract(client):
+    first = client.post("/v1/chat/completions", json=request()).json()
+    followup = request(messages=[*request()["messages"], first["choices"][0]["message"],
+                                 {"role": "user", "content": "next turn"}])
+    assert client.post("/v1/chat/completions", json=followup).status_code == 200
+    state = client.get("/kvbench/state").json()
+    # Includes computed completion KV, not just the first prompt.
+    assert state["kv_stats"]["hit_tokens"] > first["usage"]["prompt_tokens"]
 
-    @pytest.mark.asyncio
-    async def test_proxy_health(self, client: AsyncClient) -> None:
-        """Test proxy server health check."""
-        response = await client.get("/health")
-        assert response.status_code == 200
-        # Proxy with no backends should be unhealthy
-        assert response.json()["server_type"] == "proxy"
+
+@pytest.mark.parametrize("updates,code", [({"model": "wrong"}, 400), ({"max_tokens": 0}, 422),
+                                         ({"max_tokens": -1}, 422), ({"n": 2}, 400)])
+def test_invalid_requests(client, updates, code):
+    assert client.post("/v1/chat/completions", json=request(**updates)).status_code == code
+
+
+def test_body_is_bounded_before_tokenization(client):
+    assert client.post("/v1/chat/completions", json=request(messages=[{"role": "user", "content": "x" * 9000}])).status_code == 413
+
+
+def test_observability(client):
+    assert client.get("/health").json()["status"] == "healthy"
+    assert client.get("/v1/models").json()["data"][0]["id"] == "llama-3.1-8b"
+    assert "kvbench_kv_ops_total" in client.get("/metrics").text
+    manifest = client.get("/kvbench/manifest").json()
+    assert manifest["fidelity"] == "rate-v1"
+    assert manifest["ranks"][0]["bytes_per_token"] == 131072
+
+
+def test_disabled_metrics(monkeypatch):
+    monkeypatch.setattr(app_module, "create_kv_stack", lambda _: FakeKVStack())
+    with TestClient(create_app(KVBenchConfig(metrics=MetricsConfig(enabled=False)))) as client:
+        assert client.get("/metrics").status_code == 404

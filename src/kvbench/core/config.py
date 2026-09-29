@@ -11,12 +11,19 @@ Example: KVBENCH_RESOURCES__CPU_MEMORY_GB=16.0
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_validator
+
+from kvbench.core.gpu_profiles import GPU_PROFILES, GPUProfile, load_gpu_profiles
+from kvbench.core.models import MODEL_PROFILES, ModelProfile, load_model_profiles
 
 
-class KVStackConfig(BaseModel):
+class ConfigModel(BaseModel):
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+
+
+class KVStackConfig(ConfigModel):
     """KV management stack configuration.
 
     KV-Bench never performs storage I/O itself — all KV cache operations go
@@ -52,13 +59,9 @@ class KVStackConfig(BaseModel):
         "incompressible like real KV cache (storage systems with compression "
         "or dedup report unrealistically good numbers against zero-filled data)",
     )
-    random_pool_mb: int = Field(
-        default=256,
-        ge=16,
-        le=4096,
-        description="Size of the pre-generated random pool KV tensors are filled "
-        "from (larger pools reduce cross-chunk content repetition)",
-    )
+    max_cpu_memory_gb: float = Field(default=2.0, gt=0, description="Host guard: maximum aggregate LMCache CPU tier allocation (GiB)")
+    max_chunk_mb: int = Field(default=256, ge=1, le=4096, description="Reject a rank chunk larger than this payload guard (MiB)")
+    seed: int = Field(default=24301, ge=0, le=2**63 - 1)
 
     @field_validator("lmcache_config_file", mode="before")
     @classmethod
@@ -76,7 +79,7 @@ class KVStackConfig(BaseModel):
         return self
 
 
-class GPUEmulationConfig(BaseModel):
+class GPUEmulationConfig(ConfigModel):
     """GPU emulation configuration for latency calculations.
 
     Attributes:
@@ -89,17 +92,6 @@ class GPUEmulationConfig(BaseModel):
         default="H100_SXM",
         description="Name of the GPU profile to emulate",
     )
-
-    @field_validator("gpu_profile")
-    @classmethod
-    def validate_gpu_profile(cls, v: str) -> str:
-        """Validate that the GPU profile exists in the registry."""
-        from kvbench.core.gpu_profiles import GPU_PROFILES
-
-        if v not in GPU_PROFILES:
-            available = ", ".join(sorted(GPU_PROFILES.keys()))
-            raise ValueError(f"Unknown GPU profile: {v!r}. Available profiles: {available}")
-        return v
 
     efficiency_factor: float = Field(
         default=0.7,
@@ -115,7 +107,7 @@ class GPUEmulationConfig(BaseModel):
     )
 
 
-class TimingConfig(BaseModel):
+class TimingConfig(ConfigModel):
     """Timing emulation configuration.
 
     Controls how GPU compute timing is simulated. Two modes available:
@@ -191,6 +183,7 @@ class TimingConfig(BaseModel):
     )
     hot_kv_gb: float | None = Field(
         default=None,
+        ge=0,
         description="Hot set of KV chunks (GB) a returning session does not re-read through "
         "the KV stack, modelling the serving engine's own prefix cache (vLLM "
         "enable_prefix_caching). None or 0 = disabled, matching a serving stack with "
@@ -208,7 +201,7 @@ class TimingConfig(BaseModel):
     batching_token_budget: int = Field(default=8192, ge=16, description="Tokens per step (vLLM max_num_batched_tokens)")
     batching_max_num_seqs: int = Field(default=256, ge=1, description="Max sequences per step (vLLM max_num_seqs)")
     batching_weight_bytes_per_param: float | None = Field(
-        default=None, description="Weight bytes per parameter read each step (None = the model dtype; e.g. ~0.55 for MXFP4)"
+        default=None, gt=0, description="Weight bytes per parameter read each step (None = the model dtype; e.g. ~0.55 for MXFP4)"
     )
     frontend_us_per_token: float = Field(
         default=1.0, ge=0, description="Serving front-end time per prompt token (templating, tokenization, KV lookup) "
@@ -219,11 +212,25 @@ class TimingConfig(BaseModel):
         "(3.84 matches the Llama 3 tokenizer on the AgentX traces)"
     )
     kv_load_gb_s: float | None = Field(
-        default=12.0, description="In-step load rate of the cached prefix into the engine (GB/s); None disables"
+        default=12.0, ge=0, description="In-step load rate of the cached prefix into the engine (GB/s); None disables"
     )
 
 
-class ServerConfig(BaseModel):
+class SchedulerConfig(ConfigModel):
+    """Fidelity level 1: aggregate rates for one emulated engine/rank group."""
+
+    prefill_tokens_per_second: float = Field(default=10000.0, gt=0)
+    decode_tokens_per_second: float = Field(default=1000.0, gt=0)
+    prefill_chunk_tokens: int = Field(default=256, ge=1, le=65536)
+    max_active_requests: int = Field(default=16, ge=1, le=1024)
+    max_pending_requests: int = Field(default=64, ge=0, le=8192)
+    max_context_tokens: int = Field(default=131072, ge=1, le=10485760)
+    max_output_tokens: int = Field(default=4096, ge=1, le=1048576)
+    max_request_bytes: int = Field(default=4 * 1024 * 1024, ge=1024, le=64 * 1024 * 1024)
+    request_timeout_s: float = Field(default=600, gt=0)
+
+
+class ServerConfig(ConfigModel):
     """Server configuration for the KV-Bench HTTP server.
 
     Attributes:
@@ -254,17 +261,6 @@ class ServerConfig(BaseModel):
         description="Name of the model profile to emulate",
     )
 
-    @field_validator("model_profile")
-    @classmethod
-    def validate_model_profile(cls, v: str) -> str:
-        """Validate that the model profile exists in the registry."""
-        from kvbench.core.models import MODEL_PROFILES
-
-        if v not in MODEL_PROFILES:
-            available = ", ".join(sorted(MODEL_PROFILES.keys()))
-            raise ValueError(f"Unknown model profile: {v!r}. Available profiles: {available}")
-        return v
-
     workers: int = Field(
         default=1,
         ge=1,
@@ -277,7 +273,7 @@ class ServerConfig(BaseModel):
     )
 
 
-class DistributedConfig(BaseModel):
+class DistributedConfig(ConfigModel):
     """Distributed deployment configuration.
 
     Attributes:
@@ -325,7 +321,7 @@ class DistributedConfig(BaseModel):
     )
 
 
-class MetricsConfig(BaseModel):
+class MetricsConfig(ConfigModel):
     """Metrics and monitoring configuration.
 
     Attributes:
@@ -350,7 +346,7 @@ class MetricsConfig(BaseModel):
     )
 
 
-class KVBenchConfig(BaseModel):
+class KVBenchConfig(ConfigModel):
     """Main KV-Bench configuration.
 
     This is the root configuration object that contains all sub-configurations.
@@ -395,6 +391,64 @@ class KVBenchConfig(BaseModel):
         default_factory=MetricsConfig,
         description="Metrics configuration",
     )
+    scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
+    profiles_file: Path | None = None
+    _model: ModelProfile = PrivateAttr()
+    _gpu: GPUProfile = PrivateAttr()
+
+    @model_validator(mode="after")
+    def resolve_profiles(self) -> KVBenchConfig:
+        models, gpus = dict(MODEL_PROFILES), dict(GPU_PROFILES)
+        if self.profiles_file:
+            models.update(load_model_profiles(self.profiles_file))
+            gpus.update(load_gpu_profiles(self.profiles_file))
+        if self.server.model_profile not in models:
+            raise ValueError(f"Unknown model profile: {self.server.model_profile!r}")
+        if self.gpu.gpu_profile not in gpus:
+            raise ValueError(f"Unknown GPU profile: {self.gpu.gpu_profile!r}")
+        self._model = models[self.server.model_profile]
+        self._gpu = gpus[self.gpu.gpu_profile]
+        self._model.rank_layout(self.gpu.tp_size, self.timing.pp_size)
+        return self
+
+    @property
+    def model(self) -> ModelProfile:
+        return self._model
+
+    @property
+    def hardware(self) -> GPUProfile:
+        return self._gpu
+
+    def validate_serving(self) -> None:
+        """Reject legacy modes at the production boundary, not in offline tools."""
+        if self.server.server_type != "combined":
+            raise ValueError("V1 supports combined serving only; proxy/prefill/decode are deferred. Run independent combined replicas.")
+        if self.server.workers != 1:
+            raise ValueError("V1 requires workers=1: one process owns one scheduler and KV stack. Use explicit replicas.")
+        if self.gpu.efficiency_factor != GPUEmulationConfig().efficiency_factor:
+            raise ValueError("gpu.efficiency_factor is an offline analytical option; configure V1 scheduler rates instead")
+        legacy = self.timing.model_dump(exclude_defaults=True).keys() - {"full_speed", "chars_per_token", "pp_size"}
+        if legacy:
+            raise ValueError(f"V1 uses scheduler prefill/decode_tokens_per_second; legacy timing options are offline only: {sorted(legacy)}")
+        if self.distributed != DistributedConfig():
+            raise ValueError("Distributed configuration is not supported by V1 combined serving")
+        if self.metrics.prometheus_port != MetricsConfig().prometheus_port:
+            raise ValueError("V1 serves metrics on the HTTP server port; metrics.prometheus_port is a legacy setting")
+
+    def manifest(self) -> dict[str, Any]:
+        from dataclasses import asdict
+        from importlib.metadata import PackageNotFoundError, version
+
+        versions: dict[str, str | None] = {}
+        for package in ("kvbench", "lmcache", "torch"):
+            try:
+                versions[package] = version(package)
+            except PackageNotFoundError:
+                versions[package] = None
+        return {"fidelity": "rate-v1", "config": self.model_dump(mode="json"),
+                "model": asdict(self.model), "hardware": asdict(self.hardware),
+                "ranks": self.model.rank_layout(self.gpu.tp_size, self.timing.pp_size),
+                "versions": versions}
 
     @classmethod
     def from_env(cls) -> KVBenchConfig:
@@ -408,11 +462,13 @@ class KVBenchConfig(BaseModel):
         """
         import os
 
-        def get_nested_env(prefix: str = "KVBENCH") -> dict:
+        def get_nested_env(prefix: str = "KVBENCH") -> dict[str, Any]:
             """Extract nested configuration from environment variables."""
-            result: dict = {}
+            result: dict[str, Any] = {}
             for key, value in os.environ.items():
                 if not key.startswith(f"{prefix}_"):
+                    continue
+                if key in {"KVBENCH_CONFIG_FILE", "KVBENCH_REQUEST_LOG"}:
                     continue
                 # Remove prefix and split by delimiter
                 parts = key[len(prefix) + 1 :].lower().split("__")
@@ -452,6 +508,14 @@ class KVBenchConfig(BaseModel):
 
         if data is None:
             data = {}
+
+        # Paths belong to the configuration file, not the caller's cwd.
+        if isinstance(data, dict):
+            for mapping, key in ((data, "profiles_file"), (data.get("kv", {}), "lmcache_config_file"),
+                                 (data.get("kv", {}), "trace_file"), (data.get("timing", {}), "anchors_file")):
+                if isinstance(mapping, dict) and mapping.get(key):
+                    value = Path(mapping[key])
+                    mapping[key] = str((path.parent / value).resolve()) if not value.is_absolute() else str(value)
 
         return cls.model_validate(data)
 

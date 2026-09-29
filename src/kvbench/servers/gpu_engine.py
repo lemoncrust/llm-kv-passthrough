@@ -44,6 +44,7 @@ import time
 from collections import deque
 from dataclasses import dataclass, field
 
+from kvbench.core.config import KVBenchConfig
 from kvbench.core.gpu_profiles import GPUProfile, get_gpu_profile
 from kvbench.core.models import ModelProfile, get_model_profile
 
@@ -127,7 +128,7 @@ class StepCostModel:
         self,
         decode_ctx_sum: int,
         n_decode: int,
-        chunks: list[tuple[int, int]] | tuple = (),
+        chunks: list[tuple[int, int]] | tuple[tuple[int, int], ...] = (),
     ) -> float:
         """Time of one step: ``n_decode`` sequences decoding one token over
         ``decode_ctx_sum`` total context, plus prefill ``chunks`` of
@@ -164,7 +165,7 @@ class Sequence:
     decode_left: int
     load_tokens: int = 0
     loaded: bool = False
-    queue: asyncio.Queue = field(default_factory=asyncio.Queue)
+    queue: asyncio.Queue[float] = field(default_factory=asyncio.Queue)
     submitted: float = field(default_factory=time.monotonic)
     cancelled: bool = False
 
@@ -186,7 +187,7 @@ class BatchingEngine:
         self._waiting: deque[Sequence] = deque()
         self._running: list[Sequence] = []
         self._wake: asyncio.Event | None = None
-        self._task: asyncio.Task | None = None
+        self._task: asyncio.Task[None] | None = None
         # stats
         self.steps = 0
         self.busy_ms = 0.0
@@ -325,7 +326,7 @@ class BatchingEngine:
             self._running = [s for s in self._running if not s.cancelled and (s.prefill_left > 0 or s.decode_left > 0)]
 
 
-def build_engine(config) -> BatchingEngine | None:
+def build_engine(config: KVBenchConfig) -> BatchingEngine | None:
     """Engine for a KVBenchConfig when ``timing.batching`` is on (and not
     full-speed); None otherwise."""
     t = config.timing

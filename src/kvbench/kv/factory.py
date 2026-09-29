@@ -54,8 +54,12 @@ def create_kv_stack(config: KVBenchConfig) -> KVStack:
             config_file=config.kv.lmcache_config_file,
             trace_file=config.kv.trace_file,
             random_fill=config.kv.random_fill,
-            random_pool_mb=config.kv.random_pool_mb,
             tp_size=config.gpu.tp_size,
+            pp_size=config.timing.pp_size,
+            model=config.model,
+            max_cpu_memory_gb=config.kv.max_cpu_memory_gb,
+            max_chunk_mb=config.kv.max_chunk_mb,
+            seed=config.kv.seed,
         )
 
     if stack == "kvbm":

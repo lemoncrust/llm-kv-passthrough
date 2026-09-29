@@ -136,7 +136,18 @@ class TraceRecorder:
             self._fh.close()
 
 
-def install_lmcache_trace(engine: Any, recorder: TraceRecorder) -> list[str]:
+class BoundRecorder:
+    """Attach rank identity while keeping one thread-safe recorder/counter set."""
+
+    def __init__(self, recorder: TraceRecorder, rank: int):
+        self.recorder = recorder
+        self.rank = rank
+
+    def record(self, *args: Any, **kwargs: Any) -> None:
+        self.recorder.record(*args, **kwargs, rank=self.rank)
+
+
+def install_lmcache_trace(engine: Any, recorder: TraceRecorder | BoundRecorder, rank: int | None = None) -> list[str]:
     """Install trace hooks on a started LMCache engine's storage backends.
 
     Wraps, per backend instance:
@@ -161,6 +172,10 @@ def install_lmcache_trace(engine: Any, recorder: TraceRecorder) -> list[str]:
         RuntimeError: If the engine does not expose the expected
             storage_manager/storage_backends surface.
     """
+    if rank is not None:
+        if not isinstance(recorder, TraceRecorder):
+            raise ValueError("Cannot bind a trace recorder twice")
+        recorder = BoundRecorder(recorder, rank)
     storage_manager = getattr(engine, "storage_manager", None)
     backends = getattr(storage_manager, "storage_backends", None)
     if not backends:
@@ -197,7 +212,7 @@ def _obj_size(memory_obj: Any) -> int | None:
         return None
 
 
-def _wrap_logical(backend: Any, cls_name: str, recorder: TraceRecorder) -> None:
+def _wrap_logical(backend: Any, cls_name: str, recorder: TraceRecorder | BoundRecorder) -> None:
     """Wrap logical (key-level) operations on a backend instance."""
     orig_put = backend.batched_submit_put_task
     orig_get = backend.get_blocking
@@ -294,7 +309,7 @@ def _wrap_logical(backend: Any, cls_name: str, recorder: TraceRecorder) -> None:
         backend.batched_get_non_blocking = traced_batched_get_non_blocking
 
 
-def _wrap_disk_io(backend: Any, cls_name: str, recorder: TraceRecorder) -> None:
+def _wrap_disk_io(backend: Any, cls_name: str, recorder: TraceRecorder | BoundRecorder) -> None:
     """Wrap physical file I/O on a LocalDiskBackend-shaped instance."""
     orig_write_file = backend.write_file
     orig_read_file = backend.read_file

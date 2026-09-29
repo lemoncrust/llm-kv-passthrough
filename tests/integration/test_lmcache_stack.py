@@ -33,7 +33,7 @@ def write_lmcache_config(tmp_path: Path, chunk_size: int = 256) -> Path:
         f"""\
 chunk_size: {chunk_size}
 local_cpu: true
-max_local_cpu_size: 1.0
+max_local_cpu_size: 0.0625
 local_disk: "file://{disk_path}/"
 max_local_disk_size: 2.0
 """
@@ -45,7 +45,7 @@ max_local_disk_size: 2.0
 async def stack(tmp_path: Path):
     """A started LMCacheStack on a small model profile with a disk tier."""
     stack = LMCacheStack(
-        model_profile="llama-3.1-8b",
+        model_profile="llama-3.2-1b",
         instance_id=f"kvbench-test-{uuid.uuid4().hex[:8]}",
         config_file=write_lmcache_config(tmp_path),
     )
@@ -112,13 +112,13 @@ class TestLMCacheStack:
         artifacts = [f for f in files if f.is_file()]
         assert artifacts, "LMCache wrote no disk artifacts"
         # LMCache key format: <model>@<world_size>@<worker_id>@<hash>...
-        assert any("llama-3.1-8b@" in f.name for f in artifacts)
+        assert any("llama-3.2-1b--" in f.name for f in artifacts)
 
     @pytest.mark.asyncio
     async def test_chunk_size_comes_from_lmcache_config(self, tmp_path: Path) -> None:
         """The stack reports the chunk size from LMCache's own config."""
         stack = LMCacheStack(
-            model_profile="llama-3.1-8b",
+            model_profile="llama-3.2-1b",
             instance_id=f"kvbench-test-{uuid.uuid4().hex[:8]}",
             config_file=write_lmcache_config(tmp_path, chunk_size=128),
         )
@@ -137,7 +137,7 @@ class TestFactory:
         config = KVBenchConfig(
             instance_id=f"kvbench-test-{uuid.uuid4().hex[:8]}",
             kv=KVStackConfig(lmcache_config_file=write_lmcache_config(tmp_path)),
-            server=ServerConfig(model_profile="llama-3.1-8b"),
+            server=ServerConfig(model_profile="llama-3.2-1b"),
         )
         stack = create_kv_stack(config)
         assert isinstance(stack, LMCacheStack)

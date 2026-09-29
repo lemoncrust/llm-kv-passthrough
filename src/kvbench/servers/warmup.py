@@ -20,7 +20,7 @@ import logging
 import random
 import time
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from pydantic import BaseModel, Field
 
@@ -91,7 +91,7 @@ class WarmupController:
     def __init__(self, kv: KVStack) -> None:
         self.kv = kv
         self.status = WarmupState()
-        self._task: asyncio.Task | None = None
+        self._task: asyncio.Task[None] | None = None
         self._first_seq: list[int] | None = None
         self._seq_counter = 0
 
@@ -111,7 +111,7 @@ class WarmupController:
 
         capacity = self._capacity_info()
         chunk_size = capacity.get("chunk_size") or 256
-        bytes_per_token = capacity["bytes_per_token"]
+        bytes_per_token = capacity.get("stored_bytes_per_token", capacity["bytes_per_token"])
         seq_tokens = max(chunk_size, (params.seq_tokens // chunk_size) * chunk_size)
 
         if params.target_gb is not None:
@@ -154,7 +154,7 @@ class WarmupController:
             self._task.cancel()
             try:
                 await self._task
-            except asyncio.CancelledError:
+            except BaseException:
                 pass
             if self.status.state == "running":
                 # Task was cancelled before its coroutine ever ran, so the
@@ -166,7 +166,7 @@ class WarmupController:
         capacity_fn = getattr(self.kv, "capacity_info", None)
         if capacity_fn is None:
             raise RuntimeError("KV stack does not expose capacity_info()")
-        return capacity_fn()
+        return cast(dict[str, Any], capacity_fn())
 
     def _next_sequence(self, rng: random.Random, seq_tokens: int, vocab: int) -> list[int]:
         """Generate a unique random token sequence.

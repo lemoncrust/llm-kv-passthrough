@@ -1,84 +1,63 @@
-"""
-Real LMCache integration for KV-Bench.
+"""Real LMCache classic-path adapter with bounded, serialized rank operations.
 
-This stack drives the actual LMCache engine (lmcache.v1). LMCache owns the
-entire storage control plane: token chunking, prefix hashing, CPU/disk/
-remote tiering, eviction, serialization, and every byte of storage I/O.
-KV-Bench only supplies token sequences and mock GPU-side KV tensors sized
-authentically for the emulated model.
-
-Storage is configured through LMCache's own application configuration:
-
-1. ``lmcache_config_file`` in the KV-Bench config — passed verbatim to
-   ``LMCacheEngineConfig.from_file()``. This is the canonical way to
-   select and tune backends (local CPU, local disk, remote URL, ...).
-2. Otherwise LMCache's ``LMCACHE_*`` environment variables via
-   ``LMCacheEngineConfig.from_env()``.
-
-KV-Bench deliberately has no storage settings of its own.
+Each logical TP/PP rank owns an engine. Public operations finish on all ranks
+before returning. Cancellation waits for the blocking operation to finish so
+pins/resources cannot outlive the request's cleanup scope. LMCache's backend
+workers still perform physical writes asynchronously; submitted bytes are not
+reported as confirmed durable bytes.
 """
 
 from __future__ import annotations
 
 import asyncio
+import gc
+import hashlib
+import json
 import logging
-from typing import TYPE_CHECKING, Any
+import os
+from collections.abc import Callable
+from dataclasses import asdict
+from pathlib import Path
+from typing import Any, ParamSpec, TypeVar
 
-from kvbench.core.models import get_model_profile
+from kvbench.core.models import ModelProfile, get_model_profile
 from kvbench.kv.base import KVStack, KVStackStats
+from kvbench.trace.recorder import TraceRecorder
 
-if TYPE_CHECKING:
-    from pathlib import Path
+P = ParamSpec("P")
+T = TypeVar("T")
 
 logger = logging.getLogger(__name__)
 
-_LMCACHE_INSTALL_HINT = (
-    "The 'lmcache' package is required to run KV-Bench servers. "
-    "Install it with: pip install 'kvbench[lmcache]' (or: pip install lmcache). "
-    "LMCache runs CPU-only; no GPU is required."
-)
-
 
 class LMCacheStack(KVStack):
-    """KV stack backed by the real LMCache engine.
-
-    Attributes:
-        instance_id: LMCache engine instance ID.
-        model_profile: Name of the KV-Bench model profile used to size
-            KV tensors (layers, KV heads, head dim, dtype).
-        stats: Operation statistics.
-    """
-
-    def __init__(
-        self,
-        model_profile: str,
-        instance_id: str = "kvbench",
-        config_file: Path | str | None = None,
-        trace_file: Path | str | None = None,
-        random_fill: bool = True,
-        random_pool_mb: int = 256,
-        tp_size: int = 1,
-    ) -> None:
+    def __init__(self, model_profile: str, instance_id: str = "kvbench",
+                 config_file: Path | str | None = None, trace_file: Path | str | None = None,
+                 random_fill: bool = True, tp_size: int = 1, pp_size: int = 1,
+                 model: ModelProfile | None = None, max_cpu_memory_gb: float = 2.0,
+                 max_chunk_mb: int = 256, seed: int = 24301):
         self.instance_id = instance_id
         self.model_profile = model_profile
+        self.model = model or get_model_profile(model_profile)
         self.config_file = config_file
         self.trace_file = trace_file
         self.random_fill = random_fill
-        self.random_pool_mb = random_pool_mb
-        # Tensor parallelism: emulate one LMCache engine per TP rank, exactly
-        # as real vLLM runs one worker-side engine per rank. Each rank stores
-        # its own KV shard (kv_heads/tp heads, or 1 replicated head when
-        # tp > kv_heads — vLLM replicates KV heads in that regime), keyed
-        # with its worker_id, so a logical chunk becomes tp_size files.
-        self.tp_size = max(1, int(tp_size))
+        self.tp_size = tp_size
+        self.pp_size = pp_size
+        self.layout = self.model.rank_layout(tp_size, pp_size)
+        self.max_cpu_memory_gb = max_cpu_memory_gb
+        self.max_chunk_mb = max_chunk_mb
+        self.seed = seed
         self.stats = KVStackStats()
         self._engines: list[Any] = []
         self._connectors: list[Any] = []
+        self._instance_ids: list[str] = []
         self._engine: Any = None
-        self._connector: Any = None
         self._chunk_size: int | None = None
         self._lmcache_config: Any = None
-        self._trace_recorder: Any = None
+        self._trace_recorder: TraceRecorder | None = None
+        self._lock = asyncio.Lock()
+        self._closing = False
 
     @property
     def chunk_size(self) -> int:
@@ -86,326 +65,279 @@ class LMCacheStack(KVStack):
             raise RuntimeError("LMCacheStack not started; call start() first")
         return self._chunk_size
 
-    async def start(self) -> None:
-        if self._engine is not None:
-            return
-        # The engine builder spins up worker threads and allocates the CPU
-        # buffer pool; keep it off the event loop.
-        await asyncio.to_thread(self._start_engine)
+    async def _blocking(self, function: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
+        """Do not abandon a thread on cancellation (especially lookup(pin=True))."""
+        task = asyncio.create_task(asyncio.to_thread(function, *args, **kwargs))
+        cancelled = False
+        while True:
+            try:
+                result = await asyncio.shield(task)
+                break
+            except asyncio.CancelledError:
+                cancelled = True
+                if task.done():
+                    # Retrieve exceptions rather than leaking an unobserved task.
+                    task.result()
+                    raise
+        if cancelled:
+            raise asyncio.CancelledError
+        return result
 
-    def _start_engine(self) -> None:
+    async def start(self) -> None:
+        async with self._lock:
+            if self._engine is not None:
+                return
+            self._closing = False
+            try:
+                await self._blocking(self._start_sync)
+            except BaseException:
+                await self._blocking(self._close_sync)
+                raise
+
+    def _start_sync(self) -> None:
         try:
             import torch
+            from lmcache import torch_device_type
             from lmcache.v1.cache_engine import LMCacheEngineBuilder
             from lmcache.v1.config import LMCacheEngineConfig
             from lmcache.v1.metadata import LMCacheMetadata
-        except ImportError as e:
-            raise RuntimeError(_LMCACHE_INSTALL_HINT) from e
-
+        except ImportError as exc:
+            raise RuntimeError("Install 'kvbench[lmcache]' to run a server; no inference GPU is required") from exc
+        if torch_device_type != "cpu":
+            raise RuntimeError("V1 requires LMCache's CPU platform. Use `kvbench serve`, or hide accelerator devices "
+                               "before importing Torch/LMCache in an embedded process (CUDA/HIP/ROCR_VISIBLE_DEVICES='').")
         from kvbench.kv.mock_gpu import MockGPUConnector
 
-        if self.config_file is not None:
-            lmcache_config = LMCacheEngineConfig.from_file(str(self.config_file))
-            logger.info(f"LMCache configured from file: {self.config_file}")
-        else:
-            lmcache_config = LMCacheEngineConfig.from_env()
-            logger.info("LMCache configured from LMCACHE_* environment / defaults")
-
-        profile = get_model_profile(self.model_profile)
-        dtype_map = {
-            "fp16": torch.float16,
-            "bf16": torch.bfloat16,
-            "fp8": torch.float8_e4m3fn,
-        }
-        kv_dtype = dtype_map[profile.dtype]
-        chunk_size = lmcache_config.chunk_size
-
-        tp = self.tp_size
-        # vLLM shards KV heads across ranks; when tp > kv_heads each rank
-        # holds one replicated head (total stored bytes exceed logical KV).
-        heads_per_rank = max(1, profile.kv_heads // tp)
-        kv_layers = profile.effective_kv_layers
-
-        if self.trace_file is not None:
+        cfg = LMCacheEngineConfig.from_file(str(self.config_file)) if self.config_file else LMCacheEngineConfig.from_env()
+        # LMCache defaults to disabling process-wide cyclic GC. Unlike a real
+        # worker, this process also owns an async HTTP server and may restart
+        # engines. Keep GC enabled; expose the resolved setting in the manifest.
+        cfg.py_enable_gc = True
+        if not self.config_file and "LMCACHE_MAX_LOCAL_CPU_SIZE" not in os.environ:
+            # Safe default when no storage sizing was supplied; explicit LMCache
+            # configuration is never rewritten to fit the guard.
+            cfg.max_local_cpu_size = 0.25
+        unsupported = [name for name in ("use_layerwise", "enable_async_loading", "enable_blending",
+                                         "enable_pd", "enable_controller", "enable_hidden_state_cache",
+                                         "enable_p2p", "gds_path") if getattr(cfg, name, False)]
+        for option in ("enable_nixl_storage", "force_store_wait"):
+            if cfg.extra_config and cfg.extra_config.get(option):
+                unsupported.append(f"extra_config.{option}")
+        if unsupported:
+            raise ValueError(f"V1 supports classic LMCache storage only; unsupported modes: {unsupported}")
+        ranks = len(self.layout)
+        aggregate_gb = cfg.max_local_cpu_size * ranks
+        if aggregate_gb <= 0 or aggregate_gb > self.max_cpu_memory_gb:
+            raise ValueError(f"LMCache CPU pools request {aggregate_gb:g} GiB across {ranks} ranks; "
+                             f"kv.max_cpu_memory_gb guard is {self.max_cpu_memory_gb:g}")
+        chunk = cfg.chunk_size
+        if chunk < 1:
+            raise ValueError("LMCache chunk_size must be positive")
+        for rank in self.layout:
+            size = rank["bytes_per_token"] * chunk
+            aligned = (size + 4095) // 4096 * 4096
+            if size > self.max_chunk_mb * 1024**2 or aligned > cfg.max_local_cpu_size * 1024**3:
+                raise ValueError(f"Rank chunk ({size} bytes) exceeds payload guard or LMCache CPU pool")
+        self._lmcache_config = cfg
+        self._chunk_size = chunk
+        if self.trace_file:
             from kvbench.trace.recorder import TraceRecorder
 
             self._trace_recorder = TraceRecorder(self.trace_file)
-
-        for rank in range(tp):
-            metadata = LMCacheMetadata(
-                model_name=self.model_profile,
-                world_size=tp,
-                local_world_size=tp,
-                worker_id=rank,
-                local_worker_id=rank,
-                kv_dtype=kv_dtype,
-                kv_shape=(kv_layers, 2, chunk_size, heads_per_rank, profile.head_dim),
-                chunk_size=chunk_size,
-            )
-            connector = MockGPUConnector(
-                num_layers=kv_layers,
-                hidden_dim=heads_per_rank * profile.head_dim,
-                dtype=kv_dtype,
-                random_fill=self.random_fill,
-                random_pool_mb=self.random_pool_mb,
-            )
-            rank_instance = (
-                self.instance_id if tp == 1 else f"{self.instance_id}-r{rank}"
-            )
-            engine = LMCacheEngineBuilder.get_or_create(
-                rank_instance,
-                lmcache_config,
-                metadata,
-                connector,
-                broadcast_fn=lambda _tensor, _src: None,
-                broadcast_object_fn=lambda obj, _src: obj,
-            )
+        dtype = {"bf16": torch.bfloat16, "fp16": torch.float16, "fp8": torch.float8_e4m3fn}[self.model.effective_kv_dtype]
+        fingerprint = hashlib.sha256(json.dumps(asdict(self.model), sort_keys=True).encode()).hexdigest()[:12]
+        namespace = f"{self.model_profile}--{fingerprint}--tp{self.tp_size}pp{self.pp_size}"
+        for rank in self.layout:
+            index = rank["rank"]
+            identifier = f"{self.instance_id}-r{index}"
+            if LMCacheEngineBuilder.get(identifier) is not None:
+                raise ValueError(f"LMCache instance already exists: {identifier}; use a unique instance_id")
+            # Register ownership before construction so partial post_init failure
+            # still destroys the builder's engine and stats logger.
+            self._instance_ids.append(identifier)
+            metadata = LMCacheMetadata(model_name=namespace, world_size=ranks, local_world_size=ranks,
+                                       worker_id=index, local_worker_id=index, kv_dtype=dtype,
+                                       kv_shape=(rank["layers"], 2, chunk, 1, rank["width"]), chunk_size=chunk)
+            connector = MockGPUConnector(rank["layers"], rank["width"], dtype,
+                                         random_fill=self.random_fill, seed=self.seed, rank=index,
+                                         namespace=namespace)
+            engine = LMCacheEngineBuilder.get_or_create(identifier, cfg, metadata, connector,
+                                                        broadcast_fn=lambda _tensor, _src: None,
+                                                        broadcast_object_fn=lambda obj, _src: obj)
             engine.post_init()
             self._engines.append(engine)
             self._connectors.append(connector)
-
             if self._trace_recorder is not None:
                 from kvbench.trace.recorder import install_lmcache_trace
 
-                wrapped = install_lmcache_trace(engine, self._trace_recorder)
-                logger.info(
-                    f"KV trace enabled for rank {rank} -> {self.trace_file} "
-                    f"(backends: {wrapped})"
-                )
-
+                install_lmcache_trace(engine, self._trace_recorder, rank=index)
         self._engine = self._engines[0]
-        self._connector = self._connectors[0]
-        self._chunk_size = chunk_size
-        self._lmcache_config = lmcache_config
-        logger.info(
-            f"LMCache engine(s) started (instance={self.instance_id}, tp={tp}, "
-            f"model={self.model_profile}, chunk_size={chunk_size}, "
-            f"heads_per_rank={heads_per_rank}, kv_layers={kv_layers}, "
-            f"local_cpu={lmcache_config.local_cpu}, "
-            f"local_disk={lmcache_config.local_disk}, "
-            f"remote={lmcache_config.remote_url})"
-        )
+        logger.info("LMCache started: %s, %d ranks, %d-token chunks, %.3f GiB CPU pools",
+                    namespace, ranks, chunk, aggregate_gb)
 
     def _require_engine(self) -> Any:
-        if self._engine is None:
-            raise RuntimeError("LMCacheStack not started; call start() first")
+        if self._engine is None or self._closing:
+            raise RuntimeError("LMCacheStack not started or closing")
         return self._engine
 
     async def lookup(self, tokens: list[int]) -> int:
-        engine = self._require_engine()
-        try:
-            hit = await asyncio.to_thread(engine.lookup, tokens)
-        except Exception:
-            self.stats.errors += 1
-            raise
-        self.stats.lookups += 1
-        self.stats.lookup_tokens += len(tokens)
-        self.stats.hit_tokens += hit
-        return int(hit)
+        return await self._lookup(tokens, None)
 
     async def lookup_pinned(self, tokens: list[int], lookup_id: str) -> int:
-        """Mirror vLLM's LMCache lookup server: every TP rank's engine runs
-        ``lookup(pin=True)``, which pins the hit chunks and ends in
-        ``touch_cache()`` -- the LRU refresh that keeps a returning session's
-        prefix resident. The hit is the minimum across ranks. Without it the
-        prefix kept its store-time recency and the 8 GB CPU tier evicted it
-        whole (emulated re-reads of 100 % of a prefix vs a median 55 % on the
-        real GB10)."""
-        self._require_engine()
-        try:
-            hits = await asyncio.gather(
-                *(
-                    asyncio.to_thread(engine.lookup, tokens, lookup_id=lookup_id, pin=True)
-                    for engine in self._engines
-                )
-            )
-        except Exception:
-            self.stats.errors += 1
-            raise
-        hit = int(min(hits)) if hits else 0
-        self.stats.lookups += 1
-        self.stats.lookup_tokens += len(tokens)
-        self.stats.hit_tokens += hit
-        return hit
+        return await self._lookup(tokens, lookup_id)
+
+    async def _lookup(self, tokens: list[int], lookup_id: str | None) -> int:
+        async with self._lock:
+            self._require_engine()
+            try:
+                hit = await self._blocking(self._lookup_sync, tokens, lookup_id)
+            except BaseException:
+                if lookup_id is not None:
+                    await self._blocking(self._unpin_sync, lookup_id)
+                self.stats.errors += 1
+                raise
+            self.stats.lookups += 1
+            self.stats.lookup_tokens += len(tokens)
+            self.stats.hit_tokens += hit
+            return hit
+
+    def _lookup_sync(self, tokens: list[int], lookup_id: str | None) -> int:
+        return min(int(engine.lookup(tokens, lookup_id=lookup_id, pin=lookup_id is not None))
+                   for engine in self._engines)
+
+    def _unpin_sync(self, lookup_id: str) -> None:
+        failures = []
+        for engine in self._engines:
+            try:
+                engine.lookup_unpin(lookup_id)
+            except Exception as exc:
+                failures.append(exc)
+        if failures:
+            raise RuntimeError("Failed to release lookup pins on one or more ranks") from failures[0]
 
     async def unpin(self, lookup_id: str) -> None:
-        """Release a lookup's pins on every rank (vLLM does this in
-        wait_for_save, after the step that loaded the request)."""
-        if not self._engines:
-            return
-        await asyncio.gather(
-            *(asyncio.to_thread(engine.lookup_unpin, lookup_id) for engine in self._engines),
-            return_exceptions=True,
-        )
+        async with self._lock:
+            await self._blocking(self._unpin_sync, lookup_id)
+
+    def _validate_range(self, tokens: list[int], skip_leading: int) -> None:
+        if skip_leading < 0 or skip_leading > len(tokens) or skip_leading % self.chunk_size:
+            raise ValueError("skip_leading must be a chunk-aligned prefix of tokens")
 
     async def store(self, tokens: list[int], skip_leading: int = 0) -> None:
-        self._require_engine()
-        try:
-            # All TP ranks store their shard concurrently, as real vLLM
-            # workers do.
-            await asyncio.gather(
-                *(
-                    asyncio.to_thread(
-                        self._store_sync, engine, connector, tokens, skip_leading
-                    )
-                    for engine, connector in zip(self._engines, self._connectors)
-                )
-            )
-        except Exception:
-            self.stats.errors += 1
-            raise
-        self.stats.stores += 1
-        self.stats.stored_tokens += len(tokens) - skip_leading
+        async with self._lock:
+            self._require_engine()
+            self._validate_range(tokens, skip_leading)
+            end = len(tokens) // self.chunk_size * self.chunk_size
+            if end <= skip_leading:
+                return
+            try:
+                await self._blocking(self._store_sync, tokens[:end], skip_leading)
+            except Exception:
+                self.stats.errors += 1
+                raise
+            self.stats.stores += 1
+            self.stats.stored_tokens += end - skip_leading
+            self.stats.submitted_store_bytes += (end - skip_leading) * sum(r["bytes_per_token"] for r in self.layout)
 
-    def _store_sync(
-        self, engine: Any, connector: Any, tokens: list[int], skip_leading: int
-    ) -> None:
+    def _store_sync(self, tokens: list[int], skip_leading: int) -> None:
         import torch
 
-        mask = None
-        if skip_leading > 0:
-            mask = torch.ones(len(tokens), dtype=torch.bool)
-            mask[:skip_leading] = False
-        kv_source = connector.source_view(len(tokens)) if hasattr(connector, "source_view") else connector.new_kv_tensor(len(tokens))
-        engine.store(torch.tensor(tokens, dtype=torch.int64), mask=mask, kv_source=kv_source)
+        ids = torch.tensor(tokens, dtype=torch.int64)
+        # One chunk allocation per engine call. LMCache can asynchronously copy
+        # to its tiers, but the emulator never allocates a prompt-sized payload.
+        for end in range(skip_leading + self.chunk_size, len(tokens) + 1, self.chunk_size):
+            mask = torch.zeros(end, dtype=torch.bool)
+            mask[end - self.chunk_size:] = True
+            for engine in self._engines:
+                engine.store(ids[:end], mask=mask, payload_tokens=ids[:end])
 
     async def retrieve(self, tokens: list[int], skip_leading: int = 0) -> int:
-        self._require_engine()
-        try:
-            results = await asyncio.gather(
-                *(
-                    asyncio.to_thread(self._retrieve_sync, engine, connector, tokens, skip_leading)
-                    for engine, connector in zip(self._engines, self._connectors)
-                )
-            )
-            retrieved = results[0] if results else 0
-        except Exception:
-            self.stats.errors += 1
-            raise
-        self.stats.retrieves += 1
-        self.stats.retrieved_tokens += retrieved
-        return retrieved
+        async with self._lock:
+            self._require_engine()
+            self._validate_range(tokens, skip_leading)
+            try:
+                hit = await self._blocking(self._retrieve_sync, tokens, skip_leading)
+            except Exception:
+                self.stats.errors += 1
+                raise
+            self.stats.retrieves += 1
+            self.stats.retrieved_tokens += hit
+            self.stats.retrieved_bytes += hit * sum(r["bytes_per_token"] for r in self.layout)
+            return hit
 
-    def _retrieve_sync(
-        self, engine: Any, connector: Any, tokens: list[int], skip_leading: int = 0
-    ) -> int:
+    def _retrieve_sync(self, tokens: list[int], skip_leading: int) -> int:
         import torch
 
-        mask = None
-        if skip_leading > 0:
-            # Leading tokens are host-resident (HotKVSet): only the rest is
-            # read through the stack, as the real connector does for tokens
-            # its serving engine already holds.
-            mask = torch.ones(len(tokens), dtype=torch.bool)
-            mask[:skip_leading] = False
-        kv_dest = connector.dest_view(len(tokens)) if hasattr(connector, "dest_view") else connector.new_kv_tensor(len(tokens))
-        ret_mask = engine.retrieve(torch.tensor(tokens, dtype=torch.int64), mask=mask, kv_dest=kv_dest)
-        return int(ret_mask.sum())
+        ids = torch.tensor(tokens, dtype=torch.int64)
+        retrieved = 0
+        for end in range(skip_leading + self.chunk_size, len(tokens) + 1, self.chunk_size):
+            mask = torch.zeros(end, dtype=torch.bool)
+            mask[end - self.chunk_size:] = True
+            hits = [int(engine.retrieve(ids[:end], mask=mask).sum()) for engine in self._engines]
+            if min(hits) != self.chunk_size:
+                break
+            retrieved += self.chunk_size
+        return retrieved
 
     def capacity_info(self) -> dict[str, Any]:
-        """Report configured tier capacities and KV sizing for this stack.
-
-        Returns:
-            Dict with chunk_size, bytes_per_token, chunk_bytes, per-tier
-            capacity in bytes, and total_capacity_bytes (0 when the tier is
-            disabled). Requires a started stack.
-        """
         cfg = self._lmcache_config
         if cfg is None:
-            raise RuntimeError("LMCacheStack not started; call start() first")
-        profile = get_model_profile(self.model_profile)
-        bytes_per_token = profile.total_kv_cache_bytes_per_token
-        gb = 1024**3
-        local_cpu_bytes = int(cfg.max_local_cpu_size * gb) if cfg.local_cpu else 0
-        local_disk_bytes = (
-            int(cfg.max_local_disk_size * gb) if getattr(cfg, "local_disk", None) else 0
-        )
-        # Stored bytes may exceed logical KV when tp > kv_heads (vLLM
-        # replicates KV heads across ranks in that regime).
-        heads_per_rank = max(1, profile.kv_heads // self.tp_size)
-        stored_bytes_per_token = (
-            2
-            * profile.effective_kv_layers
-            * heads_per_rank
-            * profile.head_dim
-            * profile.bytes_per_element
-            * self.tp_size
-        )
-        return {
-            "chunk_size": self.chunk_size,
-            "bytes_per_token": bytes_per_token,
-            "chunk_bytes": bytes_per_token * self.chunk_size,
-            "tp_size": self.tp_size,
-            "stored_bytes_per_token": stored_bytes_per_token,
-            "files_per_chunk": self.tp_size,
-            "vocab_size": profile.vocab_size,
-            "local_cpu_enabled": bool(cfg.local_cpu),
-            "local_cpu_capacity_bytes": local_cpu_bytes,
-            "local_disk_path": str(cfg.local_disk) if getattr(cfg, "local_disk", None) else None,
-            "local_disk_capacity_bytes": local_disk_bytes,
-            "remote_url": cfg.remote_url,
-            "total_capacity_bytes": local_cpu_bytes + local_disk_bytes,
-        }
+            raise RuntimeError("LMCacheStack not started")
+        ranks = len(self.layout)
+        cpu = int(cfg.max_local_cpu_size * 1024**3) * ranks if cfg.local_cpu else 0
+        disk = int(cfg.max_local_disk_size * 1024**3) * ranks if cfg.local_disk else 0
+        stored = sum(rank["bytes_per_token"] for rank in self.layout)
+        return {"chunk_size": self.chunk_size, "bytes_per_token": self.model.total_kv_cache_bytes_per_token,
+                "chunk_bytes": stored * self.chunk_size, "stored_bytes_per_token": stored,
+                "tp_size": self.tp_size, "pp_size": self.pp_size, "files_per_chunk": ranks,
+                "ranks": [{**r, "chunk_bytes": r["bytes_per_token"] * self.chunk_size} for r in self.layout],
+                "vocab_size": self.model.vocab_size, "local_cpu_enabled": bool(cfg.local_cpu),
+                "local_cpu_capacity_bytes": cpu, "local_disk_capacity_bytes": disk,
+                "local_disk_path": str(cfg.local_disk) if cfg.local_disk else None,
+                "remote_url": cfg.remote_url, "total_capacity_bytes": cpu + disk}
 
     def usage_info(self) -> dict[str, dict[str, Any]]:
-        """Report per-backend live usage from the running LMCache engine.
-
-        Returns:
-            {backend_class_name: {usage_bytes, keys}} for backends that
-            expose them (best-effort; LMCache internals).
-        """
-        engine = self._require_engine()
         result: dict[str, dict[str, Any]] = {}
-        storage_manager = getattr(engine, "storage_manager", None)
-        backends = getattr(storage_manager, "storage_backends", None) or {}
-        for _name, backend in backends.items():
-            info: dict[str, Any] = {}
-            usage = getattr(backend, "usage", None)
-            if isinstance(usage, (int, float)):
-                info["usage_bytes"] = int(usage)
-            keys_dict = getattr(backend, "dict", None)
-            if keys_dict is not None:
-                try:
-                    info["keys"] = len(keys_dict)
-                except TypeError:
-                    pass
-            if info:
-                result[type(backend).__name__] = info
+        for rank, engine in enumerate(self._engines):
+            for backend in engine.storage_manager.storage_backends.values():
+                info = {"rank": rank}
+                usage = getattr(backend, "usage", None)
+                if isinstance(usage, (int, float)):
+                    info["usage_bytes"] = int(usage)
+                mapping = getattr(backend, "dict", None)
+                if mapping is not None:
+                    info["keys"] = len(mapping)
+                if hasattr(backend, "hot_cache"):
+                    with backend.cpu_lock:
+                        info["keys"] = len(backend.hot_cache)
+                    # V1 stores full chunks only; this is resident payload,
+                    # excluding transient staging objects and allocator padding.
+                    info["usage_bytes"] = info["keys"] * self.layout[rank]["bytes_per_token"] * self.chunk_size
+                result[f"{type(backend).__name__}/rank-{rank}"] = info
         return result
 
     @property
-    def trace_recorder(self) -> Any:
-        """The active TraceRecorder, or None when tracing is disabled."""
+    def trace_recorder(self) -> TraceRecorder | None:
         return self._trace_recorder
 
     async def close(self) -> None:
-        if self._engine is None:
-            return
-        await asyncio.to_thread(self._close_sync)
+        self._closing = True
+        async with self._lock:
+            await self._blocking(self._close_sync)
+
+    def _close_sync(self) -> None:
+        if self._instance_ids:
+            from lmcache.v1.cache_engine import LMCacheEngineBuilder
+
+            for identifier in reversed(self._instance_ids):
+                LMCacheEngineBuilder.destroy(identifier)
+        self._instance_ids.clear()
+        self._engines.clear()
+        self._connectors.clear()
+        self._engine = None
+        self._chunk_size = None
+        self._lmcache_config = None
         if self._trace_recorder is not None:
             self._trace_recorder.close()
             self._trace_recorder = None
-
-    def _close_sync(self) -> None:
-        from lmcache.v1.cache_engine import LMCacheEngineBuilder
-
-        try:
-            LMCacheEngineBuilder.destroy(self.instance_id)
-        except Exception as e:
-            logger.warning(f"Error destroying LMCache engine {self.instance_id}: {e}")
-        self._engine = None
-        self._connector = None
-        self._chunk_size = None
-        logger.info(
-            f"LMCache engine stopped (instance={self.instance_id}, "
-            f"lookups={self.stats.lookups}, stores={self.stats.stores}, "
-            f"retrieves={self.stats.retrieves}, "
-            f"token_hit_rate={self.stats.token_hit_rate:.1%})"
-        )
-
-    def __repr__(self) -> str:
-        return (
-            f"LMCacheStack(instance_id={self.instance_id!r}, "
-            f"model={self.model_profile!r}, "
-            f"config_file={str(self.config_file) if self.config_file else None!r})"
-        )
+        gc.collect()

@@ -1,0 +1,45 @@
+name: Validate V1
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  MALLOC_ARENA_MAX: "2"
+  OMP_NUM_THREADS: "1"
+  OPENBLAS_NUM_THREADS: "1"
+  PYTHONDONTWRITEBYTECODE: "1"
+
+jobs:
+  contracts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: python -m venv .venv
+      - run: .venv/bin/pip install -e '.[dev,docs]' build hatchling
+      - run: bash scripts/test-safe.sh tests/unit tests/e2e
+      - run: .venv/bin/ruff check src tests
+      - run: .venv/bin/mypy src/kvbench
+      - run: .venv/bin/mkdocs build --strict -f docs/mkdocs.yml
+      - run: .venv/bin/python -m build --no-isolation
+
+  # Real-manager tests require the platform-specific Torch/LMCache distribution.
+  # Run explicitly when validating a release or updating the pinned integration.
+  real-storage:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: python -m venv .venv
+      - run: .venv/bin/pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - run: .venv/bin/pip install -e '.[dev,lmcache]'
+      - run: bash scripts/test-safe.sh tests/integration -m integration

@@ -1,17 +1,10 @@
 """
-KV-Bench Servers Module.
+V1 rate-based serving and OpenAI-shaped protocol types.
 
-This module provides server implementations for mock LLM serving:
-- PrefillServer: Handles the prefill phase of inference
-- DecodeServer: Handles the decode phase with streaming
-- CombinedServer: Single-node server with both phases
-- DisaggregatedProxy: Routes requests to prefill/decode servers
-
-All servers provide an OpenAI-compatible API.
+The older combined/prefill/decode/proxy implementations remain historical
+experiments and are not selected by the application or exported here.
 """
 
-from kvbench.servers.combined import CombinedServer, CombinedStats
-from kvbench.servers.decode import DecodeServer, DecodeStats
 from kvbench.servers.factory import create_server
 from kvbench.servers.openai_compat import (
     ChatCompletionChunk,
@@ -31,26 +24,12 @@ from kvbench.servers.openai_compat import (
     StreamChoice,
     Usage,
 )
-from kvbench.servers.prefill import PrefillServer, PrefillStats
-from kvbench.servers.proxy import (
-    DisaggregatedProxy,
-    LoadBalanceStrategy,
-    ProxyStats,
-    ServerEndpoint,
-)
+from kvbench.servers.rate_server import RateServer, ServingStats
 
 __all__ = [
     # Servers
-    "PrefillServer",
-    "PrefillStats",
-    "DecodeServer",
-    "DecodeStats",
-    "CombinedServer",
-    "CombinedStats",
-    "DisaggregatedProxy",
-    "LoadBalanceStrategy",
-    "ProxyStats",
-    "ServerEndpoint",
+    "RateServer",
+    "ServingStats",
     "create_server",
     # OpenAI Types
     "ChatCompletionRequest",

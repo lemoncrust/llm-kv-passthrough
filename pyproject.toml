@@ -8,7 +8,7 @@ version = "1.0.0"
 description = "Distributed mock LLM serving system for benchmarking KV cache management without GPUs"
 readme = "README.md"
 license = "BSD-3-Clause"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 authors = [
     { name = "KV-Bench Team" }
 ]
@@ -18,7 +18,6 @@ classifiers = [
     "Intended Audience :: Science/Research",
     "License :: OSI Approved :: BSD License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
@@ -37,13 +36,14 @@ dependencies = [
     "prometheus-client>=0.19.0",
     "orjson>=3.9.0",
     "pyyaml>=6.0",
+    "numpy>=1.26",
 ]
 
 [project.optional-dependencies]
 # The KV management stack. Required to run servers; optional so tooling and
 # unit tests install without torch. Runs CPU-only — no GPU required.
 lmcache = [
-    "lmcache~=0.5.1",
+    "lmcache==0.5.4",
 ]
 dev = [
     "pytest>=8.0.0",
@@ -54,6 +54,7 @@ dev = [
     "ruff>=0.1.14",
     "black>=24.1.0",
     "mypy>=1.8.0",
+    "types-PyYAML>=6.0",
     "pre-commit>=3.6.0",
 ]
 docs = [
@@ -69,9 +70,9 @@ all = [
 kvbench = "kvbench.cli.main:app"
 
 [project.urls]
-Homepage = "https://github.com/kvbench/kvbench"
-Documentation = "https://kvbench.github.io/kvbench"
-Repository = "https://github.com/kvbench/kvbench"
+Homepage = "https://github.com/wvaske/llm-kv-passthrough"
+Documentation = "https://github.com/wvaske/llm-kv-passthrough/tree/main/docs"
+Repository = "https://github.com/wvaske/llm-kv-passthrough"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/kvbench"]
@@ -80,6 +81,9 @@ packages = ["src/kvbench"]
 include = [
     "/src",
     "/tests",
+    "/README.md",
+    "/LICENSE",
+    "/pyproject.toml",
 ]
 
 [tool.pytest.ini_options]
@@ -116,7 +120,7 @@ exclude_lines = [
 show_missing = true
 
 [tool.ruff]
-target-version = "py310"
+target-version = "py311"
 line-length = 100
 src = ["src", "tests"]
 
@@ -144,10 +148,10 @@ known-first-party = ["kvbench"]
 
 [tool.black]
 line-length = 100
-target-version = ["py310", "py311", "py312"]
+target-version = ["py311", "py312"]
 
 [tool.mypy]
-python_version = "3.10"
+python_version = "3.11"
 strict = true
 warn_return_any = true
 warn_unused_ignores = true
@@ -160,6 +164,7 @@ plugins = ["pydantic.mypy"]
 module = [
     "prometheus_client.*",
     "lmcache.*",
+    "torch.*",
 ]
 ignore_missing_imports = true
 

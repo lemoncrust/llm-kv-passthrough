@@ -21,25 +21,23 @@ Usage:
     >>> print(f"Prefill took {result.total_ms}ms")
     Prefill took 100.0ms
 
-The timing engine integrates with the configuration system: the servers build
-their strategy via create_timing_strategy(config), so timing mode and TP/PP
-communication settings flow from CLI flags, environment variables, or YAML
-config into served latency.
+These strategies are retained experimental/offline utilities. V1 serving uses
+the explicit aggregate rates in servers/rate_scheduler.py instead.
 """
 
 from __future__ import annotations
 
-from kvbench.timing.communication import (
-    calculate_activation_size,
-    calculate_allreduce_message_size,
-    calculate_allreduce_ms,
-    calculate_pipeline_send_recv_ms,
-)
 from kvbench.timing.calibration import (
     BUILTIN_ANCHORS,
     CalibratedTimingStrategy,
     TimingAnchor,
     load_anchors,
+)
+from kvbench.timing.communication import (
+    calculate_activation_size,
+    calculate_allreduce_message_size,
+    calculate_allreduce_ms,
+    calculate_pipeline_send_recv_ms,
 )
 from kvbench.timing.factory import create_timing_strategy
 from kvbench.timing.roofline import RooflineTimingStrategy

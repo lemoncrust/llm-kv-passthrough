@@ -54,6 +54,9 @@
         state: restarted
 
   post_tasks:
+    - name: Apply pending restart before checking readiness
+      meta: flush_handlers
+
     - name: Wait for service to be ready after restart
       uri:
         url: "http://localhost:8000/health"
@@ -63,4 +66,3 @@
       until: health_check.status == 200
       retries: 30
       delay: 2
-      when: kvbench_restart is defined and kvbench_restart.changed

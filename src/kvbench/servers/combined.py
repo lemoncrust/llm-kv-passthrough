@@ -1,6 +1,9 @@
 """
 Combined Server Implementation.
 
+Historical experimental implementation, not selected by the V1 application.
+Use RateServer for the supported workload-sensitive lifecycle.
+
 This module implements a combined server that handles both prefill and decode
 phases in a single server instance. This is the typical deployment mode for
 non-disaggregated LLM serving.
@@ -168,7 +171,7 @@ class CombinedServer:
         self.engine = build_engine(config)
         # Optional per-request timing breakdown (JSONL), for validation runs.
         _log = os.environ.get("KVBENCH_REQUEST_LOG")
-        self._req_log = open(_log, "a") if _log else None
+        self._req_log = open(_log, "a") if _log else None  # noqa: SIM115 - closed in stop()
 
     @property
     def model_name(self) -> str:
@@ -282,7 +285,7 @@ class CombinedServer:
         else:
             await self.kv.retrieve(tokens[:hit_tokens])
 
-    async def _generate_batched(self, request: ChatCompletionRequest):
+    async def _generate_batched(self, request: ChatCompletionRequest) -> AsyncIterator[tuple[int, str]]:
         """Serve one request through the batching engine.
 
         Yields ``(index, token_text)`` per generated token. The front-end
@@ -295,6 +298,7 @@ class CombinedServer:
         tokens = await asyncio.to_thread(self.processor.simulate_tokenize, request.prompt_text or "", self.config.timing.chars_per_token)
         t_tok = time.monotonic()
         lookup_id = uuid.uuid4().hex
+        lookup_active = True
         hit_tokens = await self.kv.lookup_pinned(tokens, lookup_id)
         t_look = time.monotonic()
         # The cached prefix is read through the KV stack for real, but the
@@ -318,7 +322,7 @@ class CombinedServer:
         t_sub = time.monotonic()
         inflight_at_submit = self.engine.in_flight
         seq = self.engine.submit(miss_tokens, hit_tokens, max_tokens, load_tokens=hit_tokens)
-        store_task: asyncio.Task | None = None
+        store_task: asyncio.Task[None] | None = None
         rec = None
         try:
             await seq.queue.get()
@@ -327,7 +331,7 @@ class CombinedServer:
                 retrieve_ms = await ret_task
                 ret_task = None
             await self.kv.unpin(lookup_id)
-            lookup_id = None
+            lookup_active = False
             t_first = time.monotonic()
             ttft_ms = (t_first - t0) * 1000.0
             if self._req_log is not None:
@@ -353,16 +357,16 @@ class CombinedServer:
             if store_task is not None:
                 await store_task
                 store_task = None
-            if rec is not None:
+            if rec is not None and self._req_log is not None:
                 rec.update(decode_ms=(t_last - t_first) * 1e3, store_tail_ms=(time.monotonic() - t_last) * 1e3)
                 self._req_log.write(json.dumps(rec) + "\n")
                 self._req_log.flush()
         finally:
             self.engine.cancel(seq)
-            if lookup_id is not None:
+            if lookup_active:
                 # cancelled before the first token: release the pins once any
                 # in-flight retrieve has finished with them
-                async def _late_unpin(task=ret_task, lid=lookup_id):
+                async def _late_unpin(task: asyncio.Task[float] | None = ret_task, lid: str = lookup_id) -> None:
                     if task is not None:
                         try:
                             await task
@@ -668,6 +672,9 @@ class CombinedServer:
 
     async def stop(self) -> None:
         """Stop the server (the KV stack's lifecycle is owned by the app)."""
+        if self._req_log is not None:
+            self._req_log.close()
+            self._req_log = None
         if self.engine is not None:
             logger.info("Batching engine stats: %s", self.engine.info())
             await self.engine.close()

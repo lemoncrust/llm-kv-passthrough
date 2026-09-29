@@ -1,67 +1,20 @@
-# Docker Deployment
-
-## Build the image
-
-The image includes the LMCache stack (CPU-only; the torch dependency makes
-it a large image, ~2.5 GB):
+# Docker
 
 ```bash
 docker build -t kvbench:latest .
+docker compose -f deployment/docker/docker-compose.yml up -d
 ```
 
-## Single node
+The image includes LMCache/Torch and no model weights. The single-node example
+has a 2 GiB container memory limit, a 0.25 GiB LMCache CPU tier and a bounded
+disk tier. Bind `/var/lib/lmcache` to the storage under test instead of the
+example named volume.
 
-`deployment/docker/docker-compose.yml` runs a combined server with
-LMCache's CPU + disk tiers. The disk tier lives on a named volume — bind
-it to a host NVMe mount to put a real device under test:
+`docker-compose.distributed.yml` now demonstrates **two independent combined
+replicas**, not a simulated prefill/decode proxy. It exposes ports 8000 and 8001
+and configures a shared Redis remote tier. This is an illustrative deployment;
+remote-tier behavior must be validated against the installed LMCache connector.
 
-```bash
-cd deployment/docker
-docker compose up -d
-curl http://localhost:8000/health
-```
-
-Storage is configured through LMCache's `LMCACHE_*` environment variables
-in the compose file (or mount an LMCache config file and set
-`KVBENCH_KV__LMCACHE_CONFIG_FILE`):
-
-```yaml
-environment:
-  LMCACHE_CHUNK_SIZE: "256"
-  LMCACHE_MAX_LOCAL_CPU_SIZE: "4"
-  LMCACHE_LOCAL_DISK: "file:///var/lib/lmcache/"
-  LMCACHE_MAX_LOCAL_DISK_SIZE: "20"
-volumes:
-  - /mnt/nvme-under-test:/var/lib/lmcache
-```
-
-## Disaggregated topology
-
-`deployment/docker/docker-compose.distributed.yml` runs the full
-disaggregated shape: a proxy in front of two prefill and two decode
-servers, all sharing a Redis remote tier through LMCache. Prefill writes
-KV to Redis via LMCache; decode reads it back — the shared-storage path
-under test:
-
-```bash
-cd deployment/docker
-docker compose -f docker-compose.distributed.yml up -d
-
-curl http://localhost:8000/v1/chat/completions \
-  -H 'Content-Type: application/json' \
-  -d '{"model": "llama-3.1-8b", "messages": [{"role": "user", "content": "Hello!"}], "max_tokens": 10}'
-```
-
-Swap the `redis` service and `LMCACHE_REMOTE_URL` for any storage you
-want to characterize — `valkey://`, `s3://` (MinIO), `fs://` on a shared
-mount — see [Storage Under Test](storage-backends.md).
-
-## Verifying
-
-```bash
-# LMCache-written artifacts on the disk tier
-docker compose exec kvbench ls /var/lib/lmcache
-
-# Cache hit/miss counters
-curl -s http://localhost:8000/metrics
-```
+No separate metrics port exists; scrape each replica's `/metrics`. Use unique
+trace paths/volumes per replica. Per-rank CPU sizes multiply by TP × PP; the
+adapter's aggregate guard rejects oversized configurations before allocation.

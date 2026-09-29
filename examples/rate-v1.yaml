@@ -1,0 +1,21 @@
+instance_id: rate-v1
+server:
+  model_profile: llama-3.2-1b
+gpu:
+  gpu_profile: GB10
+  tp_size: 1
+timing:
+  pp_size: 1
+  chars_per_token: 4.0
+scheduler:
+  # Illustrative aggregate rates; replace with your intended operating point.
+  prefill_tokens_per_second: 10000
+  decode_tokens_per_second: 1000
+  prefill_chunk_tokens: 256
+  max_active_requests: 16
+  max_pending_requests: 64
+kv:
+  lmcache_config_file: lmcache-local-disk.yaml
+  trace_file: /tmp/kvbench-v1-trace.jsonl
+  max_cpu_memory_gb: 2
+  max_chunk_mb: 256

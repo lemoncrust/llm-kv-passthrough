@@ -1,63 +1,12 @@
-# KV-Bench Scripts
+# Scripts
 
-Utility scripts for testing and benchmarking KV-Bench.
-
-## Scripts
-
-| Script | Description |
-|--------|-------------|
-| `coverage_report.sh` | Run tests with coverage analysis |
-| `genai_perf_test.sh` | GenAI-Perf integration test |
-| `lmcache_test.sh` | LMCache integration test |
-
-## Usage
-
-### Coverage Report
-
-Generate test coverage report:
-
-```bash
-./scripts/coverage_report.sh
-```
-
-Output includes:
-- Console coverage summary
-- HTML report in `htmlcov/`
-- XML report for CI integration
-
-### GenAI-Perf Test
-
-Run performance benchmarks with GenAI-Perf:
-
-```bash
-# Default settings
-./scripts/genai_perf_test.sh
-
-# Custom endpoint
-KVBENCH_ENDPOINT=http://myserver:8000 ./scripts/genai_perf_test.sh
-
-# Custom concurrency
-CONCURRENCY=32 NUM_REQUESTS=500 ./scripts/genai_perf_test.sh
-```
-
-### LMCache Test
-
-Test KV cache hit/miss behavior:
-
-```bash
-# Default settings
-./scripts/lmcache_test.sh
-
-# With real LMCache server
-LMCACHE_URL=lm://localhost:8080 ./scripts/lmcache_test.sh
-```
-
-## Environment Variables
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `KVBENCH_ENDPOINT` | `http://localhost:8000` | Server endpoint |
-| `KVBENCH_MODEL` | `llama-3.1-8b` | Model to test |
-| `CONCURRENCY` | `10` | Concurrent requests |
-| `NUM_REQUESTS` | `100` | Total requests |
-| `LMCACHE_URL` | - | Optional LMCache server |
+- `bash scripts/test-safe.sh tests/`: memory-bounded tests using `.venv/bin/python`
+  (override `PYTHON`). A 4 GiB virtual-memory cap and small allocator/thread
+  settings prevent test allocations from exhausting a shared development host.
+- `bash scripts/lmcache_test.sh`: the real-manager integration subset.
+- `bash scripts/genai_perf_test.sh`: run your installed GenAI-Perf against an
+  existing server. It propagates failures and does not install/start services.
+  Options use `KVBENCH_ENDPOINT`, `KVBENCH_MODEL`, `KVBENCH_INPUT_TOKENS`,
+  `KVBENCH_OUTPUT_TOKENS`, `KVBENCH_CONCURRENCY`, `KVBENCH_REQUEST_COUNT`.
+- `coverage_report.sh`: historical coverage helper; functional storage
+  invariants and sensitivity tests are the V1 acceptance criteria.

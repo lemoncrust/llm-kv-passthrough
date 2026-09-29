@@ -470,7 +470,7 @@ class LatencyCalculator:
         output_tokens: int,
         cache_hit_tokens: int = 0,
         batch_size: int = 1,
-    ) -> dict:
+    ) -> dict[str, float | int]:
         """Estimate total generation time breakdown.
 
         Args:

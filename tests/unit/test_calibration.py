@@ -115,3 +115,12 @@ def test_factory_creates_calibrated_strategy() -> None:
     cfg = cfg.model_copy(update={"timing": cfg.timing.model_copy(update={"calibrated": True})})
     strat = create_timing_strategy(cfg)
     assert isinstance(strat, CalibratedTimingStrategy)
+
+
+def test_bucket_selection_is_independent_of_request_history():
+    anchors = [TimingAnchor(model="llama-3.1-8b", gpu="H100_SXM", isl=2048, osl=1, tpot_ms=1),
+               TimingAnchor(model="llama-3.1-8b", gpu="H100_SXM", isl=16000, osl=1, tpot_ms=100)]
+    a = CalibratedTimingStrategy("H100_SXM", "llama-3.1-8b", anchors=anchors)
+    b = CalibratedTimingStrategy("H100_SXM", "llama-3.1-8b", anchors=anchors)
+    a.decode_latency(4096)
+    assert a.decode_latency(8000).total_ms == b.decode_latency(8000).total_ms

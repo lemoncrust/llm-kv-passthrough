@@ -1,3 +1,8 @@
+# Historical plan — superseded by V1
+
+This pre-refactor document records earlier proposals, not current capabilities
+or completion status. See [docs/V1_PLAN.md](docs/V1_PLAN.md) and [README.md](README.md).
+
 # KV-Bench: Distributed KV Cache Benchmarking System
 ## Comprehensive Development Plan
 

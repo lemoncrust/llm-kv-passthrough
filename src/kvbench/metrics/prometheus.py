@@ -53,6 +53,7 @@ class KVBenchCollector(Collector):
             )
             requests.add_metric(["success"], getattr(stats, "requests_success", 0))
             requests.add_metric(["failed"], getattr(stats, "requests_failed", 0))
+            requests.add_metric(["cancelled"], getattr(stats, "requests_cancelled", 0))
             yield requests
 
             tokens = CounterMetricFamily(
@@ -96,6 +97,15 @@ class KVBenchCollector(Collector):
             kv_tokens.add_metric(["stored"], kv_stats.stored_tokens)
             kv_tokens.add_metric(["retrieved"], kv_stats.retrieved_tokens)
             yield kv_tokens
+
+            yield CounterMetricFamily(
+                "kvbench_kv_submitted_store_bytes_total", "Payload bytes submitted across all KV ranks (not durability)",
+                value=kv_stats.submitted_store_bytes,
+            )
+            yield CounterMetricFamily(
+                "kvbench_kv_retrieved_bytes_total", "Successfully retrieved prefix payload bytes across all ranks",
+                value=kv_stats.retrieved_bytes,
+            )
 
             yield GaugeMetricFamily(
                 "kvbench_kv_token_hit_rate",
@@ -193,6 +203,13 @@ class MetricsExporter:
     def __init__(self, source: Any) -> None:
         self.registry = CollectorRegistry()
         self.registry.register(KVBenchCollector(source))
+        self.request_duration: Histogram | _NoHistogram
+        self.ttft: Histogram | _NoHistogram
+        config = getattr(source, "config", None)
+        if config is not None and (not config.metrics.enabled or not config.metrics.include_histograms):
+            self.request_duration = _NoHistogram()
+            self.ttft = _NoHistogram()
+            return
         self.request_duration = Histogram(
             "kvbench_request_duration_seconds",
             "End-to-end chat completion duration",
@@ -208,3 +225,8 @@ class MetricsExporter:
 
     def render(self) -> bytes:
         return generate_latest(self.registry)
+
+
+class _NoHistogram:
+    def observe(self, value: float) -> None:
+        pass

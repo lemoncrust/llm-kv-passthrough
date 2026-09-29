@@ -1,281 +1,65 @@
-"""
-GPU Profile Definitions for KV-Bench.
+"""GPU schema and file-backed catalog. Hardware estimates are offline utilities.
 
-This module provides GPU hardware profiles used for latency emulation.
-Each profile contains the key specifications needed for roofline model calculations.
-
-The profiles include:
-- NVIDIA H100 (SXM and PCIe variants)
-- NVIDIA H200
-- NVIDIA A100
-- NVIDIA L4
-- NVIDIA L40S
+V1 serving is paced by configured aggregate rates, not these peak specifications.
 """
 
-from __future__ import annotations
+from dataclasses import asdict, dataclass
+from math import isfinite
+from pathlib import Path
+from typing import Any
 
-from dataclasses import dataclass
+from kvbench.core.catalog import BUILTIN_CATALOG, read_catalog
 
 
 @dataclass(frozen=True)
 class GPUProfile:
-    """Hardware profile for a GPU.
-
-    This dataclass contains the key specifications needed for latency
-    calculations using the roofline model.
-
-    Attributes:
-        name: Human-readable name of the GPU.
-        bf16_tflops: BF16 tensor core performance in TFLOPS.
-        fp16_tflops: FP16 tensor core performance in TFLOPS.
-        hbm_bandwidth_tb_s: HBM bandwidth in TB/s.
-        hbm_capacity_gb: HBM capacity in GB.
-        nvlink_bandwidth_gb_s: NVLink bandwidth in GB/s (if available).
-        pcie_bandwidth_gb_s: PCIe bandwidth in GB/s.
-        tdp_watts: Thermal design power in watts.
-    """
-
     name: str
     bf16_tflops: float
     hbm_bandwidth_tb_s: float
     hbm_capacity_gb: int
     fp16_tflops: float | None = None
     nvlink_bandwidth_gb_s: float | None = None
-    pcie_bandwidth_gb_s: float = 64.0  # PCIe Gen5 x16 default
+    pcie_bandwidth_gb_s: float = 64.0
     tdp_watts: int | None = None
 
     def __post_init__(self) -> None:
-        """Set fp16_tflops to match bf16_tflops if not specified."""
+        if not isinstance(self.name, str) or not self.name.strip():
+            raise ValueError("GPU name must be nonempty text")
         if self.fp16_tflops is None:
-            # Use object.__setattr__ since the dataclass is frozen
             object.__setattr__(self, "fp16_tflops", self.bf16_tflops)
+        for field in ("bf16_tflops", "fp16_tflops", "hbm_bandwidth_tb_s",
+                      "hbm_capacity_gb", "nvlink_bandwidth_gb_s", "pcie_bandwidth_gb_s"):
+            value = getattr(self, field)
+            if value is not None and (not isfinite(value) or value <= 0):
+                raise ValueError(f"{field} must be finite and positive")
 
     @property
     def hbm_bandwidth_gb_s(self) -> float:
-        """Return HBM bandwidth in GB/s for convenience."""
         return self.hbm_bandwidth_tb_s * 1000
 
     @property
     def arithmetic_intensity_threshold(self) -> float:
-        """Calculate the arithmetic intensity threshold (ops/byte).
-
-        This is the point where the GPU transitions from being memory-bound
-        to compute-bound. Below this threshold, performance is limited by
-        memory bandwidth. Above it, performance is limited by compute.
-
-        Returns:
-            Arithmetic intensity threshold in operations per byte.
-        """
-        # Convert TFLOPS to GFLOPS for consistent units with GB/s
-        compute_gflops = self.bf16_tflops * 1000
-        memory_gb_s = self.hbm_bandwidth_gb_s
-        return compute_gflops / memory_gb_s
+        return self.bf16_tflops * 1000 / self.hbm_bandwidth_gb_s
 
 
-# GPU Profile Registry
-# These profiles are based on official NVIDIA specifications.
-# All TFLOPS values are DENSE (non-sparsity) tensor-core numbers so that
-# cross-GPU comparisons are consistent; NVIDIA marketing numbers for
-# Hopper/Ada are typically the 2:4 structured-sparsity figures (2x dense).
-GPU_PROFILES: dict[str, GPUProfile] = {
-    "B200_SXM": GPUProfile(
-        name="NVIDIA B200 SXM (Blackwell)",
-        bf16_tflops=2250.0,          # published dense
-        hbm_bandwidth_tb_s=8.0,
-        hbm_capacity_gb=180,         # software-visible (192 GB physical HBM3e)
-        nvlink_bandwidth_gb_s=1800.0,  # NVLink 5
-        tdp_watts=1000,
-    ),
-    "MI355X_OAM": GPUProfile(
-        name="AMD Instinct MI355X (CDNA 4)",
-        bf16_tflops=2500.0,          # published dense (5.0 PF figure is sparse)
-        hbm_bandwidth_tb_s=8.0,
-        hbm_capacity_gb=288,         # HBM3e
-        nvlink_bandwidth_gb_s=1075.0,  # Infinity Fabric gen4, 7x153.6 GB/s all-to-all
-        tdp_watts=1400,
-    ),
-    # ---- Projected / roadmap profiles (marked in the name). Numbers are the
-    # best public estimates as of Sept 2026; BF16 is derived FP8-dense/2
-    # (the FP4->FP8 2x ladder is broken on NVIDIA post-Blackwell-Ultra, so
-    # never derive BF16 from FP4). One "GPU" = one package (NVL144 = 72
-    # Rubin packages of 2 dies; NVL576 = 144 Rubin Ultra packages of 4).
-    "RUBIN_VR200": GPUProfile(
-        name="NVIDIA Rubin VR200 (projected, per package)",
-        bf16_tflops=8300.0,          # derived: ~16.7 PF FP8 dense / 2
-        hbm_bandwidth_tb_s=20.0,     # HBM4; 22 TB/s target lowered by suppliers
-        hbm_capacity_gb=288,
-        nvlink_bandwidth_gb_s=3600.0,  # NVLink 6
-        tdp_watts=1800,              # Max-Q config (Max-P reportedly 2300)
-    ),
-    # Short name used by the timing anchors and lab configs: the Rubin R200
-    # package. Performance anchors are estimated from B300 by the HBM
-    # bandwidth ratio (20 / 8 = 2.5x); see timing/anchors/nvidia-r200.yaml.
-    "R200": GPUProfile(
-        name="NVIDIA Rubin R200 (VR200, projected, per package)",
-        bf16_tflops=8300.0,
-        hbm_bandwidth_tb_s=20.0,
-        hbm_capacity_gb=288,
-        nvlink_bandwidth_gb_s=3600.0,
-        tdp_watts=1800,
-    ),
-    "RUBIN_ULTRA": GPUProfile(
-        name="NVIDIA Rubin Ultra (projected, per 4-die package, NVL576/Kyber)",
-        bf16_tflops=17400.0,         # derived: ~34.7 PF FP8 dense / 2 (slideware)
-        hbm_bandwidth_tb_s=32.0,     # HBM4e, rack 4.6 PB/s / 144 packages
-        hbm_capacity_gb=1024,        # 1 TB per package (16 stacks over 4 dies)
-        nvlink_bandwidth_gb_s=10400.0,  # NVLink 7, rack-aggregate division
-        tdp_watts=3600,
-    ),
-    "MI455X_HELIOS": GPUProfile(
-        name="AMD Instinct MI455X / Helios rack (projected, CDNA 5)",
-        bf16_tflops=10000.0,         # derived: ~20 PF FP8 dense / 2
-        hbm_bandwidth_tb_s=23.3,     # HBM4 (launch spec, up from 19.6 preview)
-        hbm_capacity_gb=432,
-        nvlink_bandwidth_gb_s=3600.0,  # UALink/IF scale-up per GPU
-        tdp_watts=2200,              # unconfirmed estimate (rack ~245 kW / 72)
-    ),
-    "B300_SXM": GPUProfile(
-        name="NVIDIA B300 SXM (Blackwell Ultra)",
-        bf16_tflops=2250.0,          # dense BF16 (HGX B300: 36 PF sparse / 8 GPUs / 2)
-        hbm_bandwidth_tb_s=8.0,      # HBM3e
-        hbm_capacity_gb=288,
-        nvlink_bandwidth_gb_s=1800.0,  # NVLink 5
-        tdp_watts=1400,
-    ),
-    "GB10": GPUProfile(
-        name="NVIDIA GB10 (DGX Spark)",
-        bf16_tflops=125.0,           # dense BF16 from the 1 PFLOP FP4-sparse ladder
-        hbm_bandwidth_tb_s=0.273,    # LPDDR5x unified memory
-        hbm_capacity_gb=128,
-        nvlink_bandwidth_gb_s=None,  # single package (NVLink-C2C to CPU only)
-        tdp_watts=140,
-    ),
-    "STRIX_HALO_IGPU": GPUProfile(
-        name="AMD Radeon 8060S (Strix Halo iGPU, gfx1151)",
-        # Coarse RDNA 3.5 estimate (40 CU); pair with calibrated timing —
-        # a measured anchor exists for this profile.
-        bf16_tflops=30.0,
-        hbm_bandwidth_tb_s=0.256,    # shared 256-bit LPDDR5x-8000 UMA
-        hbm_capacity_gb=128,
-        nvlink_bandwidth_gb_s=None,
-        tdp_watts=120,
-    ),
-    "STRIX_HALO_CPU": GPUProfile(
-        name="AMD Ryzen AI MAX+ 395 (Strix Halo) - CPU inference",
-        # Coarse CPU envelope for emulating CPU-backend serving; pair with
-        # the calibrated timing strategy (a measured anchor exists for it).
-        bf16_tflops=5.0,
-        hbm_bandwidth_tb_s=0.256,    # 256-bit LPDDR5x-8000
-        hbm_capacity_gb=128,
-        nvlink_bandwidth_gb_s=None,
-        tdp_watts=120,
-    ),
-    "H100_SXM": GPUProfile(
-        name="NVIDIA H100 SXM",
-        bf16_tflops=989.5,
-        hbm_bandwidth_tb_s=3.35,
-        hbm_capacity_gb=80,
-        nvlink_bandwidth_gb_s=900.0,
-        tdp_watts=700,
-    ),
-    "H100_PCIe": GPUProfile(
-        name="NVIDIA H100 PCIe",
-        bf16_tflops=756.5,
-        hbm_bandwidth_tb_s=2.0,
-        hbm_capacity_gb=80,
-        nvlink_bandwidth_gb_s=600.0,
-        pcie_bandwidth_gb_s=128.0,  # PCIe Gen5 x16
-        tdp_watts=350,
-    ),
-    "H200_SXM": GPUProfile(
-        name="NVIDIA H200 SXM",
-        bf16_tflops=989.5,
-        hbm_bandwidth_tb_s=4.8,
-        hbm_capacity_gb=141,
-        nvlink_bandwidth_gb_s=900.0,
-        tdp_watts=700,
-    ),
-    "A100_SXM": GPUProfile(
-        name="NVIDIA A100 SXM",
-        bf16_tflops=312.0,
-        hbm_bandwidth_tb_s=2.0,
-        hbm_capacity_gb=80,
-        nvlink_bandwidth_gb_s=600.0,
-        tdp_watts=400,
-    ),
-    "A100_PCIe": GPUProfile(
-        name="NVIDIA A100 PCIe",
-        bf16_tflops=312.0,
-        hbm_bandwidth_tb_s=2.0,
-        hbm_capacity_gb=80,
-        pcie_bandwidth_gb_s=64.0,  # PCIe Gen4 x16
-        tdp_watts=300,
-    ),
-    "L4": GPUProfile(
-        name="NVIDIA L4",
-        bf16_tflops=60.5,
-        hbm_bandwidth_tb_s=0.3,
-        hbm_capacity_gb=24,
-        pcie_bandwidth_gb_s=64.0,
-        tdp_watts=72,
-    ),
-    "L40S": GPUProfile(
-        name="NVIDIA L40S",
-        bf16_tflops=181.05,
-        hbm_bandwidth_tb_s=0.864,
-        hbm_capacity_gb=48,
-        pcie_bandwidth_gb_s=64.0,
-        tdp_watts=350,
-    ),
-}
+def load_gpu_profiles(path: Path = BUILTIN_CATALOG) -> dict[str, GPUProfile]:
+    return {name: GPUProfile(**spec) for name, spec in read_catalog(path).get("gpus", {}).items()}
+
+
+GPU_PROFILES = load_gpu_profiles()
 
 
 def get_gpu_profile(name: str) -> GPUProfile:
-    """Get a GPU profile by name.
-
-    Args:
-        name: Name of the GPU profile (e.g., "H100_SXM").
-
-    Returns:
-        The GPUProfile for the specified GPU.
-
-    Raises:
-        KeyError: If the GPU profile is not found.
-    """
     if name not in GPU_PROFILES:
-        available = ", ".join(sorted(GPU_PROFILES.keys()))
-        raise KeyError(f"Unknown GPU profile: {name}. Available profiles: {available}")
+        raise KeyError(f"Unknown GPU profile: {name}. Available profiles: {', '.join(list_gpu_profiles())}")
     return GPU_PROFILES[name]
 
 
 def list_gpu_profiles() -> list[str]:
-    """List all available GPU profile names.
-
-    Returns:
-        List of GPU profile names.
-    """
-    return sorted(GPU_PROFILES.keys())
+    return sorted(GPU_PROFILES)
 
 
-def get_gpu_profile_info(name: str) -> dict:
-    """Get detailed information about a GPU profile.
-
-    Args:
-        name: Name of the GPU profile.
-
-    Returns:
-        Dictionary with GPU profile information.
-    """
-    profile = get_gpu_profile(name)
-    return {
-        "name": profile.name,
-        "bf16_tflops": profile.bf16_tflops,
-        "fp16_tflops": profile.fp16_tflops,
-        "hbm_bandwidth_tb_s": profile.hbm_bandwidth_tb_s,
-        "hbm_bandwidth_gb_s": profile.hbm_bandwidth_gb_s,
-        "hbm_capacity_gb": profile.hbm_capacity_gb,
-        "nvlink_bandwidth_gb_s": profile.nvlink_bandwidth_gb_s,
-        "pcie_bandwidth_gb_s": profile.pcie_bandwidth_gb_s,
-        "tdp_watts": profile.tdp_watts,
-        "arithmetic_intensity_threshold": profile.arithmetic_intensity_threshold,
-    }
+def get_gpu_profile_info(name: str) -> dict[str, Any]:
+    p = get_gpu_profile(name)
+    return {**asdict(p), "hbm_bandwidth_gb_s": p.hbm_bandwidth_gb_s,
+            "arithmetic_intensity_threshold": p.arithmetic_intensity_threshold}

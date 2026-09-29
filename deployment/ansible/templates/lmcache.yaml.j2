@@ -11,12 +11,12 @@ chunk_size: {{ lmcache_chunk_size | default(256) }}
 
 # Tier 1: CPU memory (hot)
 local_cpu: {{ lmcache_local_cpu | default(true) | lower }}
-max_local_cpu_size: {{ lmcache_max_local_cpu_size_gb | default(4.0) }}
+max_local_cpu_size: {{ lmcache_max_local_cpu_size_gb | default(0.25) }}
 
 {% if lmcache_local_disk_path is defined %}
 # Tier 2: local disk (warm) — point at the NVMe or filesystem under test
 local_disk: "file://{{ lmcache_local_disk_path }}/"
-max_local_disk_size: {{ lmcache_max_local_disk_size_gb | default(100.0) }}
+max_local_disk_size: {{ lmcache_max_local_disk_size_gb | default(0.5) }}
 {% endif %}
 
 {% if lmcache_remote_url is defined %}

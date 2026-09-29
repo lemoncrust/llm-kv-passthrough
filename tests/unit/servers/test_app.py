@@ -75,21 +75,20 @@ class TestConfigWiring:
 
     def test_create_app_server_type_is_respected(self) -> None:
         config = make_config(server_type="prefill")
-        with TestClient(create_app(config)) as client:
-            health = client.get("/health").json()
-            assert health["server_type"] == "prefill"
+        with pytest.raises(ValueError, match="combined serving only"), TestClient(create_app(config)):
+            pass
 
     def test_get_app_reads_env_vars(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """`uvicorn kvbench.servers.app:app` deployments configure via env."""
         monkeypatch.setenv("KVBENCH_INSTANCE_ID", "env-test-42")
         monkeypatch.setenv("KVBENCH_SERVER__MODEL_PROFILE", "qwen-2.5-7b")
-        monkeypatch.setenv("KVBENCH_SERVER__SERVER_TYPE", "prefill")
+        monkeypatch.setenv("KVBENCH_SERVER__SERVER_TYPE", "combined")
 
         with TestClient(app_module.get_app()) as client:
             health = client.get("/health").json()
             assert health["instance_id"] == "env-test-42"
             assert health["model"] == "qwen-2.5-7b"
-            assert health["server_type"] == "prefill"
+            assert health["server_type"] == "combined"
 
     def test_load_config_prefers_config_file(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -271,6 +270,5 @@ class TestWarmupEndpoints:
             instance_id="proxy-test",
             server=ServerConfig(server_type="proxy"),
         )
-        with TestClient(create_app(config)) as client:
-            assert client.post("/kvbench/warmup", json={}).status_code == 404
-            assert client.get("/kvbench/state").status_code == 404
+        with pytest.raises(ValueError, match="combined serving only"), TestClient(create_app(config)):
+            pass

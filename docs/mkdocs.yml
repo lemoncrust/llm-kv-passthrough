@@ -1,7 +1,11 @@
 site_name: KV-Bench Documentation
+docs_dir: .
+site_dir: ../site
+exclude_docs: |
+  README.md
 site_description: Distributed Mock LLM Server for KV Cache Benchmarking
 site_author: KV-Bench Team
-repo_url: https://github.com/your-org/kv-bench
+repo_url: https://github.com/wvaske/llm-kv-passthrough
 repo_name: kv-bench
 
 theme:
@@ -46,7 +50,7 @@ nav:
   - Benchmarking:
     - GenAI-Perf: benchmarking/genai-perf.md
     - LMCache Integration: benchmarking/lmcache.md
-  - API Reference: api/
+  - V1 Plan: V1_PLAN.md
 
 plugins:
   - search
@@ -72,4 +76,4 @@ markdown_extensions:
 extra:
   social:
     - icon: fontawesome/brands/github
-      link: https://github.com/your-org/kv-bench
+      link: https://github.com/wvaske/llm-kv-passthrough

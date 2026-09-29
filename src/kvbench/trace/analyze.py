@@ -24,9 +24,9 @@ class OpStats:
 
     count: int = 0
     total_bytes: int = 0
-    sizes: Counter = field(default_factory=Counter)
+    sizes: Counter[int] = field(default_factory=Counter)
     durations_ms: list[float] = field(default_factory=list)
-    threads: set = field(default_factory=set)
+    threads: set[int] = field(default_factory=set)
     max_concurrency: int = 0
     first_mono_ms: float | None = None
     last_mono_ms: float | None = None

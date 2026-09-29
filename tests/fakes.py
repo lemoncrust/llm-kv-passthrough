@@ -69,8 +69,8 @@ class FakeKVStack(KVStack):
     def usage_info(self) -> dict:
         return {"FakeBackend": {"usage_bytes": len(self._prefixes), "keys": len(self._prefixes)}}
 
-    async def retrieve(self, tokens: list[int]) -> int:
-        hit = self._hit_length(tokens)
+    async def retrieve(self, tokens: list[int], skip_leading: int = 0) -> int:
+        hit = max(0, self._hit_length(tokens) - skip_leading)
         self.stats.retrieves += 1
         self.stats.retrieved_tokens += hit
         return hit

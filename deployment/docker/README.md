@@ -1,19 +1,8 @@
-# Docker Deployment
+# Docker examples
 
-See [docs/deployment/docker.md](../../docs/deployment/docker.md) for the
-full guide.
+See [the guide](../../docs/deployment/docker.md).
 
-- `docker-compose.yml` — single combined server; LMCache CPU + disk tiers
-  (bind `/var/lib/lmcache` to a host NVMe path to test a real device)
-- `docker-compose.distributed.yml` — proxy + 2 prefill + 2 decode servers
-  sharing a Redis remote tier through LMCache
-
-```bash
-docker compose up -d                                       # single node
-docker compose -f docker-compose.distributed.yml up -d     # disaggregated
-curl http://localhost:8000/health
-```
-
-Storage is configured via `LMCACHE_*` environment variables in the
-compose files — swap `LMCACHE_REMOTE_URL` to point at the storage you
-want to characterize.
+`docker-compose.yml` is one combined engine. `docker-compose.distributed.yml`
+is two independent combined replicas, **not** prefill/decode disaggregation.
+Both use bounded example memory sizes. Bind the cache directory to your storage
+under test and validate real I/O before interpreting benchmark results.

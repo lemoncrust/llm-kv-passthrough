@@ -18,7 +18,7 @@ import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from kvbench.servers.openai_compat import (
     ChatCompletionChunk,
@@ -140,7 +140,7 @@ class DisaggregatedProxy:
 
         # Health check interval
         self._health_check_interval = config.distributed.health_check_interval
-        self._health_check_task: asyncio.Task | None = None
+        self._health_check_task: asyncio.Task[None] | None = None
 
     @property
     def model_name(self) -> str:
@@ -535,7 +535,7 @@ class DisaggregatedProxy:
             avg_latency_ms=self.stats.avg_latency_ms,
         )
 
-    def get_server_status(self) -> dict:
+    def get_server_status(self) -> dict[str, Any]:
         """Get status of all backend servers.
 
         Returns:

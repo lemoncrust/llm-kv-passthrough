@@ -1,70 +1,34 @@
-# Disaggregated KV-Bench: proxy -> prefill + decode fleets sharing a
-# Redis remote tier through LMCache. The prefill servers write KV cache
-# to Redis via LMCache; the decode servers read it back — the shared
-# storage path under test.
-x-kvbench-common: &kvbench-common
+# V1: independent combined replicas, not prefill/decode disaggregation.
+x-engine: &engine
   image: kvbench:latest
   build:
     context: ../..
     dockerfile: Dockerfile
+  mem_limit: 2g
   depends_on:
     - redis
-
-x-lmcache-env: &lmcache-env
-  KVBENCH_SERVER__MODEL_PROFILE: llama-3.1-8b
-  KVBENCH_GPU__GPU_PROFILE: H100_SXM
-  LMCACHE_CHUNK_SIZE: "256"
-  LMCACHE_MAX_LOCAL_CPU_SIZE: "2"
-  # Shared remote tier — all servers hit the same Redis
+x-env: &env
+  KVBENCH_SERVER__MODEL_PROFILE: llama-3.2-1b
+  KVBENCH_SCHEDULER__PREFILL_TOKENS_PER_SECOND: "10000"
+  KVBENCH_SCHEDULER__DECODE_TOKENS_PER_SECOND: "1000"
+  LMCACHE_MAX_LOCAL_CPU_SIZE: "0.25"
+  LMCACHE_LOCAL_DISK: ""
   LMCACHE_REMOTE_URL: "redis://redis:6379"
-  LMCACHE_REMOTE_SERDE: "naive"
-
+  LMCACHE_REMOTE_SERDE: naive
 services:
   redis:
     image: redis:7-alpine
-    command: ["redis-server", "--maxmemory", "8gb", "--maxmemory-policy", "allkeys-lru"]
-    ports:
-      - "6379:6379"
-
-  prefill-1:
-    <<: *kvbench-common
+    mem_limit: 384m
+    command: ["redis-server", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+  replica-1:
+    <<: *engine
+    ports: ["8000:8000"]
     environment:
-      <<: *lmcache-env
-      KVBENCH_INSTANCE_ID: prefill-1
-      KVBENCH_SERVER__SERVER_TYPE: prefill
-
-  prefill-2:
-    <<: *kvbench-common
+      <<: *env
+      KVBENCH_INSTANCE_ID: replica-1
+  replica-2:
+    <<: *engine
+    ports: ["8001:8000"]
     environment:
-      <<: *lmcache-env
-      KVBENCH_INSTANCE_ID: prefill-2
-      KVBENCH_SERVER__SERVER_TYPE: prefill
-
-  decode-1:
-    <<: *kvbench-common
-    environment:
-      <<: *lmcache-env
-      KVBENCH_INSTANCE_ID: decode-1
-      KVBENCH_SERVER__SERVER_TYPE: decode
-
-  decode-2:
-    <<: *kvbench-common
-    environment:
-      <<: *lmcache-env
-      KVBENCH_INSTANCE_ID: decode-2
-      KVBENCH_SERVER__SERVER_TYPE: decode
-
-  proxy:
-    image: kvbench:latest
-    depends_on:
-      - prefill-1
-      - prefill-2
-      - decode-1
-      - decode-2
-    ports:
-      - "8000:8000"
-    environment:
-      KVBENCH_INSTANCE_ID: proxy
-      KVBENCH_SERVER__SERVER_TYPE: proxy
-      KVBENCH_DISTRIBUTED__PREFILL_ENDPOINTS: "http://prefill-1:8000,http://prefill-2:8000"
-      KVBENCH_DISTRIBUTED__DECODE_ENDPOINTS: "http://decode-1:8000,http://decode-2:8000"
+      <<: *env
+      KVBENCH_INSTANCE_ID: replica-2

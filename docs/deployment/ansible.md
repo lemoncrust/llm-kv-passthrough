@@ -1,72 +1,22 @@
-# Ansible Deployment
+# Ansible starting point
 
-`deployment/ansible/` deploys KV-Bench across a fleet: a Python venv per
-host, the `kvbench[lmcache]` package, two rendered config files (KV-Bench
-and LMCache), and a systemd unit.
-
-> These playbooks are provided as a starting point and are not exercised
-> in CI — review the rendered configs (`/etc/kvbench/*.yaml`) on a staging
-> host before a full rollout.
-
-## Inventory
-
-```yaml
-# inventory/example.yml
-all:
-  children:
-    kvbench_servers:
-      children:
-        prefill:
-          hosts:
-            prefill-1.example.com:
-            prefill-2.example.com:
-        decode:
-          hosts:
-            decode-1.example.com:
-            decode-2.example.com:
-        proxy:
-          hosts:
-            proxy-1.example.com:
-```
-
-## Variables
-
-KV-Bench settings (`config.yaml.j2`):
-
-| Variable | Default | Purpose |
-|----------|---------|---------|
-| `kvbench_server_type` | `combined` | prefill / decode / combined / proxy |
-| `kvbench_model` | `llama-3.1-8b` | model profile |
-| `kvbench_gpu` | `H100_SXM` | GPU profile |
-| `kvbench_pip_spec` | git+https of this repo | pip requirement to install |
-
-LMCache settings (`lmcache.yaml.j2`) — this is where storage lives:
-
-| Variable | Default | Purpose |
-|----------|---------|---------|
-| `lmcache_chunk_size` | `256` | tokens per KV chunk |
-| `lmcache_max_local_cpu_size_gb` | `4.0` | CPU tier size |
-| `lmcache_local_disk_path` | unset | disk tier path (NVMe under test) |
-| `lmcache_max_local_disk_size_gb` | `100.0` | disk tier size |
-| `lmcache_remote_url` | unset | shared remote tier (`redis://...`, `s3://...`, `fs://...`) |
-
-Example group vars for a disaggregated benchmark with shared Redis:
-
-```yaml
-# group_vars/kvbench_servers.yml
-lmcache_chunk_size: 256
-lmcache_max_local_cpu_size_gb: 2.0
-lmcache_remote_url: "redis://cache-host:6379"
-```
-
-## Run
+The examples deploy independent **combined V1 engines**, one per host, with a
+Python 3.11+ virtual environment, LMCache, rendered configs and a systemd unit.
+They are not a tested fleet-deployment guarantee or a disaggregated topology.
 
 ```bash
-cd deployment/ansible
-ansible-playbook -i inventory/example.yml playbooks/deploy.yml
-ansible-playbook -i inventory/example.yml playbooks/benchmark.yml   # drive load
-ansible-playbook -i inventory/example.yml playbooks/teardown.yml
+ansible-playbook -i deployment/ansible/inventory/example.yml deployment/ansible/playbooks/deploy.yml
 ```
 
-The deploy playbook health-checks `http://localhost:8000/health` on each
-host after starting the service.
+Mount storage separately; the playbook creates the configured cache directory
+but does not configure NFS or format devices. A shared local-disk mount does not
+create shared LMCache discovery. The default systemd memory cap is 2 GiB;
+reconcile it with your aggregate per-rank CPU pools and runtime overhead.
+
+Variables: `kvbench_prefill_tps`, `kvbench_decode_tps`, `kvbench_model`,
+`kvbench_gpu`, `kvbench_tp_size`, `kvbench_pp_size`, `kvbench_memory_limit`,
+`lmcache_max_local_cpu_size_gb`, `lmcache_local_disk_path`,
+`lmcache_max_local_disk_size_gb`, and optional `lmcache_remote_url`.
+
+`configure.yml` renders updates and restarts. `benchmark.yml` is explicitly a
+connectivity/storage smoke test; use an external workload generator for timing.

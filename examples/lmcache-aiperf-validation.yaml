@@ -1,0 +1,6 @@
+chunk_size: 16
+local_cpu: true
+max_local_cpu_size: 0.0078125  # 8 MiB
+# Use a fresh directory for each cold comparison run.
+local_disk: "file:///tmp/kvbench-aiperf-cache/"
+max_local_disk_size: 0.5
