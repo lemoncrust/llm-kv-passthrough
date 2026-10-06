@@ -27,10 +27,10 @@ from __future__ import annotations
 
 import json
 from collections import defaultdict
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 
 @dataclass
@@ -179,10 +179,16 @@ class Trace:
         return sorted((t for c in self.conversations for t in c.turns), key=lambda t: t.root.start_ms)
 
     def conversation(self, conversation_id: str) -> Conversation | None:
-        return next((c for c in self.conversations if c.conversation_id == conversation_id), None)
+        """The conversation with this id, or with this unique id prefix."""
+        return _match(
+            conversation_id,
+            [c for c in self.conversations if c.conversation_id is not None],
+            lambda c: c.conversation_id or "",
+        )
 
     def turn(self, trace_id: str) -> Turn | None:
-        return next((t for t in self.turns if t.trace_id == trace_id), None)
+        """The request with this trace id, or with this unique id prefix."""
+        return _match(trace_id, self.turns, lambda t: t.trace_id)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -190,6 +196,26 @@ class Trace:
             "conversations": [c.to_dict() for c in self.conversations],
             "orphans": [n.to_dict() for n in self.orphans],
         }
+
+
+_T = TypeVar("_T")
+
+
+def _match(wanted: str, items: list[_T], key: Callable[[_T], str]) -> _T | None:
+    """Exact id match, else the single item whose id starts with ``wanted``.
+
+    Ids are UUID-length; an unambiguous prefix is accepted so people need
+    not paste whole ids. An ambiguous prefix raises rather than guessing.
+    """
+    exact = [item for item in items if key(item) == wanted]
+    if exact:
+        return exact[0]
+    prefixed = [item for item in items if key(item).startswith(wanted)]
+    if len(prefixed) > 1:
+        raise ValueError(
+            f"id prefix {wanted!r} is ambiguous: {sorted(key(i) for i in prefixed)[:5]}"
+        )
+    return prefixed[0] if prefixed else None
 
 
 def _node(record: dict[str, Any]) -> Node:

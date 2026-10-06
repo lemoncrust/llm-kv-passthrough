@@ -503,10 +503,13 @@ def trace_tree(
         None, "--output", "-o", help="Write nested JSON here instead of stdout"
     ),
     request: str | None = typer.Option(
-        None, "--request", "-r", help="Only this request (trace id / X-Request-ID)"
+        None, "--request", "-r", help="Only this request (trace id / X-Request-ID, or a unique prefix)"
     ),
     conversation: str | None = typer.Option(
-        None, "--conversation", "-c", help="Only this conversation (X-Correlation-ID)"
+        None,
+        "--conversation",
+        "-c",
+        help="Only this conversation (X-Correlation-ID, or a unique prefix)",
     ),
     indent: int = typer.Option(2, "--indent", help="JSON indent (0 = compact)"),
 ) -> None:
@@ -518,21 +521,29 @@ def trace_tree(
         raise typer.Exit(2)
 
     assembled = load(trace)
+    try:
+        selected_turn = assembled.turn(request) if request is not None else None
+        selected_conv = assembled.conversation(conversation) if conversation is not None else None
+    except ValueError as e:  # ambiguous prefix
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(1) from None
     if request is not None:
-        turn = assembled.turn(request)
+        turn = selected_turn
         if turn is None:
             console.print(f"[red]Request {request!r} not found in {trace}[/red]")
             raise typer.Exit(1)
         payload: dict = turn.to_dict()
-        written = f"request {request} ({sum(1 for _ in turn.root.walk())} spans)"
+        written = f"request {turn.trace_id} ({sum(1 for _ in turn.root.walk())} spans)"
     elif conversation is not None:
-        conv = assembled.conversation(conversation)
+        conv = selected_conv
         if conv is None:
             console.print(f"[red]Conversation {conversation!r} not found in {trace}[/red]")
             raise typer.Exit(1)
         payload = conv.to_dict()
         n_spans = sum(1 for t in conv.turns for _ in t.root.walk())
-        written = f"conversation {conversation} ({len(conv.turns)} requests, {n_spans} spans)"
+        written = (
+            f"conversation {conv.conversation_id} ({len(conv.turns)} requests, {n_spans} spans)"
+        )
     else:
         payload = assembled.to_dict()
         written = (

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 
+import pytest
 from typer.testing import CliRunner
 
 from kvbench.cli.main import app
@@ -102,6 +103,15 @@ class TestBuild:
         assert a2.stage("kv.store") is None and a2.io_ms("write") == 0.0
         assert a1.served_from() == {}  # no block_map marks in this synthetic trace
 
+    def test_lookup_by_unique_prefix(self):
+        trace = build(sample_records())
+        assert trace.conversation("convB").conversation_id == "convB"
+        assert trace.turn("a2").trace_id == "a2"            # exact match wins
+        assert trace.turn("so").trace_id == "solo"           # unique prefix
+        assert trace.turn("zzz") is None
+        with pytest.raises(ValueError, match="ambiguous"):
+            trace.turn("a")                                  # a1 and a2
+
     def test_unattributed_spans_become_orphans(self):
         trace = build(sample_records())
         assert [n.name for n in trace.orphans] == ["lmcache.backend_info", "io.write"]
@@ -175,3 +185,13 @@ class TestLoadAndCli:
         assert ok.exit_code == 0 and json.loads(ok.output)["turns"] == 1
         missing = CliRunner().invoke(app, ["trace", "tree", str(p), "-r", "nope"])
         assert missing.exit_code == 1
+
+    def test_cli_tree_accepts_unique_prefix_and_rejects_ambiguous(self, tmp_path):
+        p = self.write(tmp_path)
+        out = tmp_path / "b.json"
+        ok = CliRunner().invoke(app, ["trace", "tree", str(p), "-c", "convB"[:5], "-o", str(out)])
+        assert ok.exit_code == 0, ok.output
+        assert "conversation convB" in ok.output  # resolved full id is reported
+        assert json.loads(out.read_text())["conversation_id"] == "convB"
+        ambiguous = CliRunner().invoke(app, ["trace", "tree", str(p), "-r", "a"])
+        assert ambiguous.exit_code == 1 and "ambiguous" in ambiguous.output
