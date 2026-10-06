@@ -150,6 +150,24 @@ class TestLoadAndCli:
         assert result.exit_code == 0, result.output
         data = json.loads(out.read_text())
         assert data["trace_id"] == "a2" and data["attrs"]["previous_request_id"] == "a1"
+        # the confirmation describes what was written, not the whole trace
+        assert "request a2" in result.output and "(8 spans)" in result.output
+        assert "conversations" not in result.output
+
+    def test_cli_tree_conversation_to_file_reports_its_size(self, tmp_path):
+        out = tmp_path / "convA.json"
+        result = CliRunner().invoke(
+            app, ["trace", "tree", str(self.write(tmp_path)), "-c", "convA", "-o", str(out)]
+        )
+        assert result.exit_code == 0, result.output
+        assert "conversation convA (2 requests, 20 spans)" in result.output
+        assert json.loads(out.read_text())["turns"] == 2
+
+    def test_cli_tree_rejects_request_with_conversation(self, tmp_path):
+        result = CliRunner().invoke(
+            app, ["trace", "tree", str(self.write(tmp_path)), "-r", "a1", "-c", "convA"]
+        )
+        assert result.exit_code == 2 and "mutually exclusive" in result.output
 
     def test_cli_tree_conversation_and_missing(self, tmp_path):
         p = self.write(tmp_path)

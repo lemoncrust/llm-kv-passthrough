@@ -513,6 +513,10 @@ def trace_tree(
     """Assemble a span trace into conversations -> requests -> stage trees (JSON)."""
     from kvbench.trace.tree import load
 
+    if request is not None and conversation is not None:
+        console.print("[red]--request and --conversation are mutually exclusive[/red]")
+        raise typer.Exit(2)
+
     assembled = load(trace)
     if request is not None:
         turn = assembled.turn(request)
@@ -520,23 +524,27 @@ def trace_tree(
             console.print(f"[red]Request {request!r} not found in {trace}[/red]")
             raise typer.Exit(1)
         payload: dict = turn.to_dict()
+        written = f"request {request} ({sum(1 for _ in turn.root.walk())} spans)"
     elif conversation is not None:
         conv = assembled.conversation(conversation)
         if conv is None:
             console.print(f"[red]Conversation {conversation!r} not found in {trace}[/red]")
             raise typer.Exit(1)
         payload = conv.to_dict()
+        n_spans = sum(1 for t in conv.turns for _ in t.root.walk())
+        written = f"conversation {conversation} ({len(conv.turns)} requests, {n_spans} spans)"
     else:
         payload = assembled.to_dict()
+        written = (
+            f"whole trace ({assembled.span_count} spans, {len(assembled.conversations)} "
+            f"conversations, {len(assembled.turns)} requests)"
+        )
 
     text = json.dumps(payload, indent=indent or None)
     if output:
         with open(output, "w") as f:
             f.write(text + "\n")
-        console.print(
-            f"[green]Wrote {output}[/green] ({assembled.span_count} spans, "
-            f"{len(assembled.conversations)} conversations, {len(assembled.turns)} requests)"
-        )
+        console.print(f"[green]Wrote {output}[/green]: {written}")
     else:
         print(text)
 
