@@ -67,7 +67,9 @@ class ChatCompletionRequest(BaseModel):
         n: Number of completions to generate.
         stream: Whether to stream partial results.
         stop: Stop sequences.
-        max_tokens: Maximum tokens to generate.
+        max_tokens: Maximum tokens to generate (legacy OpenAI field).
+        max_completion_tokens: Maximum tokens to generate (current OpenAI
+            field name; benchmark clients like AIPerf send this one).
         presence_penalty: Presence penalty (-2 to 2).
         frequency_penalty: Frequency penalty (-2 to 2).
         logit_bias: Token logit biases.
@@ -84,12 +86,18 @@ class ChatCompletionRequest(BaseModel):
     stream: bool | None = False
     stop: str | list[str] | None = None
     max_tokens: int | None = None
+    max_completion_tokens: int | None = None
     presence_penalty: float | None = Field(default=0.0, ge=-2.0, le=2.0)
     frequency_penalty: float | None = Field(default=0.0, ge=-2.0, le=2.0)
     logit_bias: dict[str, float] | None = None
     user: str | None = None
     response_format: ResponseFormat | None = None
     seed: int | None = None
+
+    @property
+    def output_token_limit(self) -> int | None:
+        """The requested output token limit, honoring both OpenAI field names."""
+        return self.max_tokens or self.max_completion_tokens
 
     @property
     def prompt_text(self) -> str:

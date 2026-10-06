@@ -259,7 +259,7 @@ class CombinedServer:
             yield start_chunk.to_sse()
 
             # Decode phase
-            max_tokens = request.max_tokens or 100
+            max_tokens = request.output_token_limit or 100
             context_length = num_prompt_tokens
             tokens_generated = 0
 
@@ -322,7 +322,7 @@ class CombinedServer:
             self.stats.cache_misses += misses
 
             # Decode phase
-            max_tokens = request.max_tokens or 100
+            max_tokens = request.output_token_limit or 100
             context_length = num_prompt_tokens
             generated_text = ""
             tokens_generated = 0

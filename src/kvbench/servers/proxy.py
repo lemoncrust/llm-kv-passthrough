@@ -255,7 +255,7 @@ class DisaggregatedProxy:
         """
         server.active_connections += 1
         try:
-            max_tokens = request.max_tokens or 100
+            max_tokens = request.output_token_limit or 100
 
             # Simulate decode latency: ~8ms per token
             mock_tokens = [
@@ -294,7 +294,7 @@ class DisaggregatedProxy:
         """
         server.active_connections += 1
         try:
-            max_tokens = request.max_tokens or 100
+            max_tokens = request.output_token_limit or 100
             mock_tokens = [
                 " The", " answer", " is", " that", " we", " need",
                 " to", " consider", " this", " carefully", ".",
