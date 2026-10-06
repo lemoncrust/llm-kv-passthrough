@@ -7,7 +7,11 @@ same seam LMCache's own AuditBackend uses:
 - batched_submit_put_task  -> ``lmcache.put`` per chunk (submission time)
 - get_blocking / batched_get_blocking / batched_get_non_blocking
                            -> ``lmcache.get`` / ``lmcache.batched_get``
-- contains / batched_contains -> ``lmcache.contains``
+- contains -> ``lmcache.contains`` (one per chunk probed, with ``hit``);
+  batched_contains -> ``lmcache.batched_contains`` (the prefix-match verdict:
+  ``n`` chunks asked, ``hit_chunks`` leading chunks present). The default
+  batched_contains probes chunk by chunk and stops at the first miss, so the
+  per-chunk marks precede their summary.
 - remove                   -> ``lmcache.evict`` (the eviction path)
 - LocalDiskBackend.write_file / read_file -> ``io.write`` / ``io.read``,
   the operations a disk actually sees (path, bytes, duration)
@@ -182,7 +186,7 @@ def _wrap_logical(backend: Any, tier: str, tracer: Tracer) -> None:
         def traced_batched_contains(keys, *args, **kwargs):  # type: ignore[no-untyped-def]
             result = orig_batched_contains(keys, *args, **kwargs)
             tracer.mark(
-                "lmcache.contains",
+                "lmcache.batched_contains",
                 tier=tier,
                 n=len(keys) if hasattr(keys, "__len__") else None,
                 hit_chunks=int(result) if isinstance(result, int) else bool(result),

@@ -209,10 +209,13 @@ class TestReadPath:
             assert disk.contains(FakeKey(2)) is False
             assert disk.batched_contains([FakeKey(1), FakeKey(2)]) == 1
 
-        marks = [r for r in read(tracer) if r["name"] == "lmcache.contains"]
-        assert len(marks) == 3 and all(m["parent_id"] == lookup.span_id for m in marks)
-        assert [m["attrs"].get("hit") for m in marks[:2]] == [True, False]
-        assert marks[2]["attrs"] == {"tier": "FakeDiskBackend", "n": 2, "hit_chunks": 1}
+        recs = read(tracer)
+        marks = [r for r in recs if r["name"] == "lmcache.contains"]
+        assert len(marks) == 2 and all(m["parent_id"] == lookup.span_id for m in marks)
+        assert [m["attrs"]["hit"] for m in marks] == [True, False]
+        (batched,) = [r for r in recs if r["name"] == "lmcache.batched_contains"]
+        assert batched["parent_id"] == lookup.span_id
+        assert batched["attrs"] == {"tier": "FakeDiskBackend", "n": 2, "hit_chunks": 1}
 
     def test_batched_get_nests_reads_and_block_map(self, tracer):
         mapping = {

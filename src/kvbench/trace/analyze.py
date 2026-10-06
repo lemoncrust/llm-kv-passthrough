@@ -109,6 +109,7 @@ _SPAN_EVENTS: dict[str, tuple[str, str]] = {
     "lmcache.get": ("logical", "get"),
     "lmcache.batched_get": ("logical", "get"),
     "lmcache.contains": ("logical", "contains"),
+    "lmcache.batched_contains": ("logical", "batched_contains"),
     "lmcache.evict": ("logical", "remove"),
     "lmcache.backend_info": ("meta", "backend_info"),
 }
