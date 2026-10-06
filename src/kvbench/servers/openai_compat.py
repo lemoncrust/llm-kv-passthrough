@@ -196,6 +196,7 @@ class ChatCompletionResponse(BaseModel):
         prompt_tokens: int,
         completion_tokens: int,
         finish_reason: str = "stop",
+        completion_id: str | None = None,
     ) -> ChatCompletionResponse:
         """Create a simple completion response.
 
@@ -205,11 +206,14 @@ class ChatCompletionResponse(BaseModel):
             prompt_tokens: Number of prompt tokens.
             completion_tokens: Number of completion tokens.
             finish_reason: Why the completion finished.
+            completion_id: Pre-generated completion id; a fresh one is
+                generated when omitted.
 
         Returns:
             A ChatCompletionResponse instance.
         """
         return cls(
+            **({"id": completion_id} if completion_id is not None else {}),
             model=model,
             choices=[
                 Choice(

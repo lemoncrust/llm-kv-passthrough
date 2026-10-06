@@ -8,8 +8,10 @@ endpoints for the KV-Bench mock LLM server.
 from __future__ import annotations
 
 import logging
+import time
+import uuid
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
@@ -31,6 +33,8 @@ from kvbench.servers.openai_compat import (
 from kvbench.servers.prefill import PrefillServer
 from kvbench.servers.proxy import DisaggregatedProxy
 from kvbench.servers.warmup import WarmupController, WarmupRequest
+from kvbench.trace import spans
+from kvbench.trace.identity import ConversationTracker, RequestIdentity, identify
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
@@ -62,6 +66,7 @@ class KVBenchApp:
         self._kv = None
         self._warmup: WarmupController | None = None
         self._metrics = MetricsExporter(self)
+        self._conversations = ConversationTracker()
 
         @asynccontextmanager
         async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
@@ -204,15 +209,28 @@ class KVBenchApp:
         @self.app.post("/v1/chat/completions", response_model=None)
         async def chat_completions(
             request: ChatCompletionRequest,
+            http_request: Request,
         ) -> ChatCompletionResponse | StreamingResponse:
             """Chat completion endpoint (OpenAI-compatible)."""
             if self._server is None:
                 raise HTTPException(status_code=503, detail="Server not initialized")
 
+            # The request's trace is rooted here, in the HTTP layer, so it
+            # covers the whole exchange; stages nest underneath. Identity
+            # comes from the client's headers when it sends them.
+            identity = identify(
+                http_request.headers, f"chatcmpl-{uuid.uuid4().hex[:24]}", self._conversations
+            )
+            root_attrs: dict[str, Any] = {
+                "model": request.model,
+                "stream": bool(request.stream),
+                **identity.span_attrs(),
+            }
+
             # Handle streaming
             if request.stream:
                 return StreamingResponse(
-                    self._stream_response(request),
+                    self._stream_response(request, identity, root_attrs),
                     media_type="text/event-stream",
                     headers={
                         "Cache-Control": "no-cache",
@@ -222,23 +240,27 @@ class KVBenchApp:
                 )
 
             # Non-streaming response
-            import time as _time
-
-            start = _time.perf_counter()
-            if isinstance(self._server, (CombinedServer, DisaggregatedProxy, PrefillServer)):
-                result = await self._server.chat_completions(request)
-            elif isinstance(self._server, DecodeServer):
-                # Decode-only server: derive context length with the same
-                # simulated tokenizer the KV path uses, so timing and KV
-                # token counts agree.
-                prompt = request.prompt_text or ""
-                context_length = max(
-                    1, len(self._server.processor.simulate_tokenize(prompt))
-                )
-                result = await self._server.chat_completions(request, context_length)
-            else:
-                raise HTTPException(status_code=500, detail="Unknown server type")
-            self._metrics.request_duration.observe(_time.perf_counter() - start)
+            start = time.perf_counter()
+            with spans.root("request", trace_id=identity.request_id, **root_attrs) as req_span:
+                if isinstance(self._server, CombinedServer):
+                    result = await self._server.chat_completions(
+                        request, completion_id=identity.completion_id
+                    )
+                elif isinstance(self._server, (DisaggregatedProxy, PrefillServer)):
+                    result = await self._server.chat_completions(request)
+                elif isinstance(self._server, DecodeServer):
+                    # Decode-only server: derive context length with the same
+                    # simulated tokenizer the KV path uses, so timing and KV
+                    # token counts agree.
+                    prompt = request.prompt_text or ""
+                    context_length = max(
+                        1, len(self._server.processor.simulate_tokenize(prompt))
+                    )
+                    result = await self._server.chat_completions(request, context_length)
+                else:
+                    raise HTTPException(status_code=500, detail="Unknown server type")
+                req_span.set(status="error" if isinstance(result, ErrorResponse) else "ok")
+            self._metrics.request_duration.observe(time.perf_counter() - start)
 
             if isinstance(result, ErrorResponse):
                 return JSONResponse(
@@ -255,42 +277,55 @@ class KVBenchApp:
             error = ErrorResponse.create(str(exc), "server_error")
             return JSONResponse(status_code=500, content=error.model_dump())
 
-    async def _stream_response(self, request: ChatCompletionRequest) -> AsyncGenerator[str, None]:
-        """Generate streaming response, observing TTFT and total duration."""
-        import time as _time
+    async def _stream_response(
+        self,
+        request: ChatCompletionRequest,
+        identity: RequestIdentity,
+        root_attrs: dict[str, Any],
+    ) -> AsyncGenerator[str, None]:
+        """Generate streaming response, observing TTFT and total duration.
 
+        The request's root span wraps the whole stream, so a client that
+        disconnects mid-stream still yields a closed span (``cancelled``).
+        """
         if self._server is None:
             yield ErrorResponse.create("Server not initialized", "server_error").model_dump_json()
             return
 
-        start = _time.perf_counter()
-        first_token_seen = False
+        with spans.root("request", trace_id=identity.request_id, **root_attrs) as req_span:
+            if isinstance(self._server, CombinedServer):
+                stream = self._server.chat_completions_stream(
+                    request, completion_id=identity.completion_id
+                )
+            elif isinstance(self._server, DisaggregatedProxy):
+                stream = self._server.chat_completions_stream(request)
+            elif isinstance(self._server, DecodeServer):
+                prompt = request.prompt_text or ""
+                context_length = max(
+                    1, len(self._server.processor.simulate_tokenize(prompt))
+                )
+                stream = self._server.chat_completions_stream(request, context_length)
+            else:
+                # PrefillServer doesn't support streaming well
+                error = ErrorResponse.create(
+                    "Prefill-only server doesn't support streaming",
+                    "invalid_request_error",
+                )
+                req_span.set(status="error")
+                yield f"data: {error.model_dump_json()}\n\n"
+                return
 
-        if isinstance(self._server, (CombinedServer, DisaggregatedProxy)):
-            async for chunk in self._server.chat_completions_stream(request):
-                if not first_token_seen:
-                    self._metrics.ttft.observe(_time.perf_counter() - start)
-                    first_token_seen = True
+            start = time.perf_counter()
+            chunks = 0
+            async for chunk in stream:
+                if chunks == 0:
+                    ttft = time.perf_counter() - start
+                    self._metrics.ttft.observe(ttft)
+                    req_span.set(first_chunk_ms=round(ttft * 1000, 3))
+                chunks += 1
                 yield chunk
-            self._metrics.request_duration.observe(_time.perf_counter() - start)
-        elif isinstance(self._server, DecodeServer):
-            prompt = request.prompt_text or ""
-            context_length = max(
-                1, len(self._server.processor.simulate_tokenize(prompt))
-            )
-            async for chunk in self._server.chat_completions_stream(request, context_length):
-                if not first_token_seen:
-                    self._metrics.ttft.observe(_time.perf_counter() - start)
-                    first_token_seen = True
-                yield chunk
-            self._metrics.request_duration.observe(_time.perf_counter() - start)
-        else:
-            # PrefillServer doesn't support streaming well
-            error = ErrorResponse.create(
-                "Prefill-only server doesn't support streaming",
-                "invalid_request_error",
-            )
-            yield f"data: {error.model_dump_json()}\n\n"
+            req_span.set(chunks=chunks, status="ok")
+            self._metrics.request_duration.observe(time.perf_counter() - start)
 
 
 def create_app(config: KVBenchConfig | None = None) -> FastAPI:

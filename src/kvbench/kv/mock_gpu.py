@@ -22,6 +22,8 @@ import torch
 from lmcache.v1.gpu_connector.gpu_connectors import GPUConnectorInterface
 from lmcache.v1.memory_management import MemoryFormat, MemoryObj
 
+from kvbench.trace import spans
+
 
 class MockGPUConnector(GPUConnectorInterface):
     """Serves CPU tensors to LMCache in place of GPU KV memory.
@@ -44,6 +46,7 @@ class MockGPUConnector(GPUConnectorInterface):
         self.num_layers = num_layers
         self.hidden_dim = hidden_dim
         self.dtype = dtype
+        self._element_bytes = torch.empty((), dtype=dtype).element_size()
         self.random_fill = random_fill
         self._pool: torch.Tensor | None = None
         if random_fill:
@@ -73,33 +76,45 @@ class MockGPUConnector(GPUConnectorInterface):
         (incompressible, like real KV data) when random_fill is on, else
         uninitialized.
         """
-        tensor = torch.empty(
-            (2, self.num_layers, num_tokens, self.hidden_dim), dtype=self.dtype
-        )
-        if self._pool is not None:
-            flat = tensor.view(torch.uint8).view(-1)
-            pool = self._pool
-            pool_size = pool.numel()
-            pos = 0
-            remaining = flat.numel()
-            while remaining > 0:
-                with self._offset_lock:
-                    offset = int(
-                        torch.randint(0, pool_size, (1,), generator=self._offset_gen)
-                    )
-                length = min(remaining, pool_size - offset)
-                flat[pos : pos + length] = pool[offset : offset + length]
-                pos += length
-                remaining -= length
+        with spans.span(
+            "gpu.alloc",
+            tokens=num_tokens,
+            bytes=self.kv_bytes(num_tokens),
+            random_fill=self._pool is not None,
+        ):
+            tensor = torch.empty(
+                (2, self.num_layers, num_tokens, self.hidden_dim), dtype=self.dtype
+            )
+            if self._pool is not None:
+                flat = tensor.view(torch.uint8).view(-1)
+                pool = self._pool
+                pool_size = pool.numel()
+                pos = 0
+                remaining = flat.numel()
+                while remaining > 0:
+                    with self._offset_lock:
+                        offset = int(
+                            torch.randint(0, pool_size, (1,), generator=self._offset_gen)
+                        )
+                    length = min(remaining, pool_size - offset)
+                    flat[pos : pos + length] = pool[offset : offset + length]
+                    pos += length
+                    remaining -= length
         return tensor
+
+    def kv_bytes(self, num_tokens: int) -> int:
+        """Bytes of KV data for ``num_tokens`` in this connector's layout."""
+        return 2 * self.num_layers * num_tokens * self.hidden_dim * self._element_bytes
 
     def to_gpu(self, memory_obj: MemoryObj, start: int, end: int, **kwargs) -> None:
         kv_dest: torch.Tensor = kwargs["kv_dest"]
-        kv_dest[:, :, start:end, :] = memory_obj.tensor
+        with spans.span("gpu.copy_in", tokens=end - start, bytes=self.kv_bytes(end - start)):
+            kv_dest[:, :, start:end, :] = memory_obj.tensor
 
     def from_gpu(self, memory_obj: MemoryObj, start: int, end: int, **kwargs) -> None:
         kv_source: torch.Tensor = kwargs["kv_source"]
-        memory_obj.tensor.copy_(kv_source[:, :, start:end, :])
+        with spans.span("gpu.copy_out", tokens=end - start, bytes=self.kv_bytes(end - start)):
+            memory_obj.tensor.copy_(kv_source[:, :, start:end, :])
 
     def batched_from_gpu(self, memory_objs, starts, ends, **kwargs) -> None:
         for memory_obj, start, end in zip(memory_objs, starts, ends, strict=True):

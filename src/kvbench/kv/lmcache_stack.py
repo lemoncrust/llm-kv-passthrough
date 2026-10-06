@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING, Any
 
 from kvbench.core.models import get_model_profile
 from kvbench.kv.base import KVStack, KVStackStats
+from kvbench.trace import spans
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -78,7 +79,8 @@ class LMCacheStack(KVStack):
         self._connector: Any = None
         self._chunk_size: int | None = None
         self._lmcache_config: Any = None
-        self._trace_recorder: Any = None
+        self._tracer: spans.Tracer | None = None
+        self._owns_tracer = False
 
     @property
     def chunk_size(self) -> int:
@@ -127,9 +129,12 @@ class LMCacheStack(KVStack):
         kv_layers = profile.effective_kv_layers
 
         if self.trace_file is not None:
-            from kvbench.trace.recorder import TraceRecorder
-
-            self._trace_recorder = TraceRecorder(self.trace_file)
+            # One process-wide span tracer; the server layer opens request
+            # spans on it and this stack's operations nest underneath.
+            self._tracer = spans.get_tracer()
+            if self._tracer is None:
+                self._tracer = spans.install(self.trace_file)
+                self._owns_tracer = True
 
         for rank in range(tp):
             metadata = LMCacheMetadata(
@@ -164,14 +169,8 @@ class LMCacheStack(KVStack):
             self._engines.append(engine)
             self._connectors.append(connector)
 
-            if self._trace_recorder is not None:
-                from kvbench.trace.recorder import install_lmcache_trace
-
-                wrapped = install_lmcache_trace(engine, self._trace_recorder)
-                logger.info(
-                    f"KV trace enabled for rank {rank} -> {self.trace_file} "
-                    f"(backends: {wrapped})"
-                )
+            if self._tracer is not None:
+                logger.info(f"KV trace enabled for rank {rank} -> {self.trace_file}")
 
         self._engine = self._engines[0]
         self._connector = self._connectors[0]
@@ -211,9 +210,11 @@ class LMCacheStack(KVStack):
             await asyncio.gather(
                 *(
                     asyncio.to_thread(
-                        self._store_sync, engine, connector, tokens, skip_leading
+                        self._store_sync, rank, engine, connector, tokens, skip_leading
                     )
-                    for engine, connector in zip(self._engines, self._connectors)
+                    for rank, (engine, connector) in enumerate(
+                        zip(self._engines, self._connectors, strict=True)
+                    )
                 )
             )
         except Exception:
@@ -223,24 +224,29 @@ class LMCacheStack(KVStack):
         self.stats.stored_tokens += len(tokens) - skip_leading
 
     def _store_sync(
-        self, engine: Any, connector: Any, tokens: list[int], skip_leading: int
+        self, rank: int, engine: Any, connector: Any, tokens: list[int], skip_leading: int
     ) -> None:
         import torch
 
-        mask = None
-        if skip_leading > 0:
-            mask = torch.ones(len(tokens), dtype=torch.bool)
-            mask[:skip_leading] = False
-        kv_source = connector.new_kv_tensor(len(tokens))
-        engine.store(torch.tensor(tokens, dtype=torch.int64), mask=mask, kv_source=kv_source)
+        with spans.span("rank.store", rank=rank, tokens=len(tokens), skip_leading=skip_leading):
+            mask = None
+            if skip_leading > 0:
+                mask = torch.ones(len(tokens), dtype=torch.bool)
+                mask[:skip_leading] = False
+            kv_source = connector.new_kv_tensor(len(tokens))
+            engine.store(
+                torch.tensor(tokens, dtype=torch.int64), mask=mask, kv_source=kv_source
+            )
 
     async def retrieve(self, tokens: list[int]) -> int:
         self._require_engine()
         try:
             results = await asyncio.gather(
                 *(
-                    asyncio.to_thread(self._retrieve_sync, engine, connector, tokens)
-                    for engine, connector in zip(self._engines, self._connectors)
+                    asyncio.to_thread(self._retrieve_sync, rank, engine, connector, tokens)
+                    for rank, (engine, connector) in enumerate(
+                        zip(self._engines, self._connectors, strict=True)
+                    )
                 )
             )
             retrieved = results[0] if results else 0
@@ -251,12 +257,15 @@ class LMCacheStack(KVStack):
         self.stats.retrieved_tokens += retrieved
         return retrieved
 
-    def _retrieve_sync(self, engine: Any, connector: Any, tokens: list[int]) -> int:
+    def _retrieve_sync(self, rank: int, engine: Any, connector: Any, tokens: list[int]) -> int:
         import torch
 
-        kv_dest = connector.new_kv_tensor(len(tokens))
-        ret_mask = engine.retrieve(torch.tensor(tokens, dtype=torch.int64), kv_dest=kv_dest)
-        return int(ret_mask.sum())
+        with spans.span("rank.retrieve", rank=rank, tokens=len(tokens)) as sp:
+            kv_dest = connector.new_kv_tensor(len(tokens))
+            ret_mask = engine.retrieve(torch.tensor(tokens, dtype=torch.int64), kv_dest=kv_dest)
+            retrieved = int(ret_mask.sum())
+            sp.set(retrieved_tokens=retrieved)
+        return retrieved
 
     def capacity_info(self) -> dict[str, Any]:
         """Report configured tier capacities and KV sizing for this stack.
@@ -331,16 +340,17 @@ class LMCacheStack(KVStack):
 
     @property
     def trace_recorder(self) -> Any:
-        """The active TraceRecorder, or None when tracing is disabled."""
-        return self._trace_recorder
+        """The active span tracer (exposes op/byte counters), or None."""
+        return self._tracer
 
     async def close(self) -> None:
         if self._engine is None:
             return
         await asyncio.to_thread(self._close_sync)
-        if self._trace_recorder is not None:
-            self._trace_recorder.close()
-            self._trace_recorder = None
+        if self._tracer is not None:
+            if self._owns_tracer:
+                spans.uninstall()
+            self._tracer = None
 
     def _close_sync(self) -> None:
         from lmcache.v1.cache_engine import LMCacheEngineBuilder

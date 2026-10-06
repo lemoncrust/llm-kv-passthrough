@@ -274,3 +274,92 @@ class TestWarmupEndpoints:
         with TestClient(create_app(config)) as client:
             assert client.post("/kvbench/warmup", json={}).status_code == 404
             assert client.get("/kvbench/state").status_code == 404
+
+
+class TestTracing:
+    """Request root spans and client identity at the HTTP layer."""
+
+    @pytest.fixture
+    def tracer(self, tmp_path: Path):
+        from kvbench.trace import spans
+
+        t = spans.install(tmp_path / "spans.jsonl")
+        yield t
+        spans.uninstall()
+
+    @pytest.fixture
+    def client(self) -> TestClient:
+        with TestClient(create_app(make_config())) as client:
+            yield client
+
+    @staticmethod
+    def spans_of(tracer) -> list[dict]:
+        import json
+
+        tracer.flush()
+        return [json.loads(line) for line in tracer.path.read_text().splitlines()]
+
+    @staticmethod
+    def body(max_tokens: int = 2, stream: bool = False) -> dict:
+        return {
+            "model": "llama-3.1-8b",
+            "messages": [{"role": "user", "content": "Hello there!"}],
+            "max_tokens": max_tokens,
+            "stream": stream,
+        }
+
+    def test_client_ids_become_trace_identity(self, client: TestClient, tracer) -> None:
+        headers = {"X-Request-ID": "req-1", "X-Correlation-ID": "conv-A"}
+        r1 = client.post("/v1/chat/completions", json=self.body(), headers=headers)
+        assert r1.status_code == 200
+        headers["X-Request-ID"] = "req-2"
+        r2 = client.post("/v1/chat/completions", json=self.body(), headers=headers)
+        assert r2.status_code == 200
+
+        recs = self.spans_of(tracer)
+        roots = [r for r in recs if r["name"] == "request"]
+        assert [r["trace_id"] for r in roots] == ["req-1", "req-2"]
+        first, second = (r["attrs"] for r in roots)
+        assert first["conversation_id"] == "conv-A" and first["turn_index"] == 0
+        assert first["previous_request_id"] is None
+        assert first["client_request_id"] is True
+        assert first["completion_id"] == r1.json()["id"]
+        assert first["model"] == "llama-3.1-8b" and first["stream"] is False
+        assert first["status"] == "ok"
+        assert second["turn_index"] == 1 and second["previous_request_id"] == "req-1"
+        # every stage of a request shares its trace id and hangs off its root
+        for root in roots:
+            stages = [r for r in recs if r["trace_id"] == root["trace_id"] and r is not root]
+            assert stages, root["trace_id"]
+            assert {"tokenize", "kv.lookup", "decode", "response.end"} <= {s["name"] for s in stages}
+            assert all(
+                s["parent_id"] == root["span_id"] or s["name"] == "decode.step" for s in stages
+            )
+
+    def test_without_headers_trace_id_is_completion_id(self, client: TestClient, tracer) -> None:
+        r = client.post("/v1/chat/completions", json=self.body())
+        root = next(x for x in self.spans_of(tracer) if x["name"] == "request")
+        assert root["trace_id"] == r.json()["id"]
+        assert root["attrs"]["client_request_id"] is False
+        assert "conversation_id" not in root["attrs"]
+
+    def test_streaming_request_root_records_first_chunk(self, client: TestClient, tracer) -> None:
+        with client.stream(
+            "POST",
+            "/v1/chat/completions",
+            json=self.body(max_tokens=3, stream=True),
+            headers={"X-Request-ID": "stream-1"},
+        ) as response:
+            assert response.status_code == 200
+            "".join(response.iter_text())
+
+        recs = self.spans_of(tracer)
+        root = next(x for x in recs if x["name"] == "request")
+        assert root["trace_id"] == "stream-1"
+        assert root["attrs"]["stream"] is True and root["attrs"]["status"] == "ok"
+        assert root["attrs"]["first_chunk_ms"] >= 0
+        assert root["attrs"]["chunks"] == 3 + 3  # role chunk + 3 tokens + end chunk + [DONE]
+        names = [x["name"] for x in recs if x["trace_id"] == "stream-1"]
+        assert "response.first_chunk" in names and names.count("decode.step") == 3
+        # the root closes last, after the stream is fully consumed
+        assert names[-1] == "request"

@@ -286,3 +286,165 @@ class TestCombinedServerTiming:
         assert with_comm._calculate_prefill_latency_ms(
             1000
         ) > without_comm._calculate_prefill_latency_ms(1000)
+
+
+class TestTracing:
+    """Stage spans emitted while serving a request."""
+
+    LONG_PROMPT = "alpha bravo charlie delta echo foxtrot golf hotel " * 20  # ~3 chunks of 16
+
+    @pytest.fixture
+    def tracer(self, tmp_path):
+        from kvbench.trace import spans
+
+        t = spans.install(tmp_path / "spans.jsonl")
+        yield t
+        spans.uninstall()
+
+    @pytest.fixture
+    def server(self, request) -> CombinedServer:
+        from kvbench.core.config import KVStackConfig
+
+        decode_steps = getattr(request, "param", True)
+        config = KVBenchConfig(
+            instance_id="test-trace", kv=KVStackConfig(trace_decode_steps=decode_steps)
+        )
+        return CombinedServer(config=config, kv=FakeKVStack(chunk_size=16))
+
+    @staticmethod
+    def spans_of(tracer) -> list[dict]:
+        import json
+
+        tracer.flush()
+        return [json.loads(line) for line in tracer.path.read_text().splitlines()]
+
+    @staticmethod
+    def names(records: list[dict]) -> list[str]:
+        return [r["name"] for r in records]
+
+    def make_request(self, prompt: str, max_tokens: int = 3, stream: bool = False):
+        return ChatCompletionRequest(
+            model="llama-3.1-8b",
+            messages=[ChatMessage(role=MessageRole.USER, content=prompt)],
+            max_tokens=max_tokens,
+            stream=stream,
+        )
+
+    async def test_cold_request_stages(self, server: CombinedServer, tracer) -> None:
+        from kvbench.trace import spans
+
+        with spans.root("request", trace_id="t1"):
+            response = await server.chat_completions(
+                self.make_request(self.LONG_PROMPT, max_tokens=3), completion_id="chatcmpl-abc"
+            )
+
+        recs = self.spans_of(tracer)
+        by = {r["name"]: r for r in recs}
+        assert all(r["trace_id"] == "t1" for r in recs)
+        # closing order == processing order for sequential stages
+        stage_order = [n for n in self.names(recs) if n not in ("decode.step", "request")]
+        assert stage_order == [
+            "tokenize",
+            "kv.lookup",
+            "prefill.compute",
+            "kv.store",
+            "decode",
+            "response.end",
+        ]
+        assert self.names(recs).count("decode.step") == 3
+        root = by["request"]["span_id"]
+        for name in ("tokenize", "kv.lookup", "prefill.compute", "kv.store", "decode"):
+            assert by[name]["parent_id"] == root, name
+        steps = [r for r in recs if r["name"] == "decode.step"]
+        assert all(s["parent_id"] == by["decode"]["span_id"] for s in steps)
+        assert [s["attrs"]["i"] for s in steps] == [0, 1, 2]
+
+        tok = by["tokenize"]["attrs"]
+        assert tok["chunk_size"] == 16 and tok["tokens"] > 32
+        assert tok["full_chunks"] == tok["tokens"] // 16
+        assert by["kv.lookup"]["attrs"] == {"tokens": tok["tokens"], "hit_tokens": 0, "hit_chunks": 0}
+        pre = by["prefill.compute"]["attrs"]
+        assert pre["miss_tokens"] == tok["tokens"] and pre["context_tokens"] == 0
+        assert pre["emulated_ms"] > 0 and "compute_bound" in pre and "breakdown" in pre
+        assert by["prefill.compute"]["dur_ms"] >= pre["emulated_ms"] * 0.9
+        store = by["kv.store"]["attrs"]
+        assert store == {
+            "tokens": tok["full_chunks"] * 16,
+            "skip_leading": 0,
+            "chunks": tok["full_chunks"],
+        }
+        dec = by["decode"]["attrs"]
+        assert dec["generated"] == 3 and dec["max_tokens"] == 3
+        assert dec["context_length"] == tok["tokens"]
+        assert dec["emulated_ms_total"] > 0 and "token_ts_ms" not in dec
+        assert by["response.end"]["attrs"] == {"finish_reason": "stop", "generated": 3}
+        assert "kv.retrieve" not in by
+        assert response.id == "chatcmpl-abc"
+
+    async def test_repeat_request_retrieves_and_skips_store(
+        self, server: CombinedServer, tracer
+    ) -> None:
+        from kvbench.trace import spans
+
+        await server.chat_completions(self.make_request(self.LONG_PROMPT, max_tokens=1))
+        with spans.root("request", trace_id="t2"):
+            await server.chat_completions(self.make_request(self.LONG_PROMPT, max_tokens=1))
+
+        recs = [r for r in self.spans_of(tracer) if r["trace_id"] == "t2"]
+        by = {r["name"]: r for r in recs}
+        full = by["tokenize"]["attrs"]["full_chunks"]
+        assert by["kv.lookup"]["attrs"]["hit_chunks"] == full
+        assert by["kv.retrieve"]["attrs"] == {
+            "tokens": full * 16,
+            "chunks": full,
+            "retrieved_tokens": full * 16,
+        }
+        # the trailing partial chunk is still computed, but nothing new is stored
+        assert by["prefill.compute"]["attrs"]["context_tokens"] == full * 16
+        assert "kv.store" not in by
+
+    async def test_streaming_marks_first_chunk_before_decode(
+        self, server: CombinedServer, tracer
+    ) -> None:
+        from kvbench.trace import spans
+
+        with spans.root("request", trace_id="t3"):
+            chunks = [
+                c
+                async for c in server.chat_completions_stream(
+                    self.make_request("Hello!", max_tokens=2, stream=True),
+                    completion_id="chatcmpl-s",
+                )
+            ]
+
+        recs = self.spans_of(tracer)
+        by = {r["name"]: r for r in recs}
+        assert by["response.first_chunk"]["dur_ms"] == 0.0
+        first_step = min(r["start_ms"] for r in recs if r["name"] == "decode.step")
+        assert by["response.first_chunk"]["start_ms"] <= first_step
+        assert by["response.end"]["attrs"]["generated"] == 2
+        assert chunks[-1] == "data: [DONE]\n\n"
+        assert all("chatcmpl-s" in c for c in chunks[:-1])
+
+    @pytest.mark.parametrize("server", [False], indirect=True)
+    async def test_decode_steps_can_collapse_to_timestamps(
+        self, server: CombinedServer, tracer
+    ) -> None:
+        from kvbench.trace import spans
+
+        with spans.root("request", trace_id="t4"):
+            await server.chat_completions(self.make_request("Hello!", max_tokens=4))
+
+        recs = self.spans_of(tracer)
+        assert "decode.step" not in self.names(recs)
+        dec = next(r for r in recs if r["name"] == "decode")["attrs"]
+        assert dec["generated"] == 4
+        assert len(dec["token_ts_ms"]) == 4
+        assert dec["token_ts_ms"] == sorted(dec["token_ts_ms"])
+
+    async def test_no_tracer_means_no_spans_and_no_errors(self, server: CombinedServer) -> None:
+        from kvbench.trace import spans
+
+        assert spans.get_tracer() is None
+        response = await server.chat_completions(self.make_request("Hello!", max_tokens=2))
+        assert response.usage.completion_tokens == 2

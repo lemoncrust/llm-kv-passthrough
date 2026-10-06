@@ -43,8 +43,15 @@ class KVStackConfig(BaseModel):
     )
     trace_file: Path | None = Field(
         default=None,
-        description="Path to a JSONL file recording every logical and physical "
-        "storage operation the KV stack performs (for FIO workload derivation)",
+        description="Path to a JSONL span trace: every processing step of each "
+        "request (tokenize, KV lookup/retrieve/store, emulated compute, decode "
+        "steps) and the storage operations LMCache performs for them",
+    )
+    trace_decode_steps: bool = Field(
+        default=True,
+        description="With trace_file: record one span per generated token "
+        "(decode.step); when off, the decode span carries a per-token "
+        "timestamp array instead",
     )
     random_fill: bool = Field(
         default=True,

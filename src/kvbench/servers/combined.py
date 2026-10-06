@@ -15,8 +15,9 @@ import logging
 import time
 import uuid
 from collections.abc import AsyncIterator
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from kvbench.core.tokens import TokenProcessor
 from kvbench.servers.openai_compat import (
@@ -30,6 +31,7 @@ from kvbench.servers.openai_compat import (
     ModelList,
 )
 from kvbench.timing import create_timing_strategy
+from kvbench.trace import spans
 
 if TYPE_CHECKING:
     from kvbench.core.config import KVBenchConfig
@@ -108,6 +110,7 @@ class CombinedServer:
         self.chunk_size = kv.chunk_size
         self.processor = TokenProcessor(chunk_size=self.chunk_size)
         self.timing = create_timing_strategy(config)
+        self.trace_decode_steps = config.kv.trace_decode_steps
 
     @property
     def model_name(self) -> str:
@@ -195,23 +198,41 @@ class CombinedServer:
         Returns:
             Tuple of (num_tokens, cache_hits, cache_misses).
         """
-        tokens = self.processor.simulate_tokenize(prompt)
-        num_tokens = len(tokens)
+        with spans.span("tokenize", prompt_chars=len(prompt)) as sp:
+            tokens = self.processor.simulate_tokenize(prompt)
+            num_tokens = len(tokens)
+            sp.set(
+                tokens=num_tokens,
+                full_chunks=num_tokens // self.chunk_size,
+                chunk_size=self.chunk_size,
+            )
 
         # Ask the KV stack how much of the sequence is already cached
-        hit_tokens = await self.kv.lookup(tokens)
+        with spans.span("kv.lookup", tokens=num_tokens) as sp:
+            hit_tokens = await self.kv.lookup(tokens)
+            sp.set(hit_tokens=hit_tokens, hit_chunks=hit_tokens // self.chunk_size)
         if hit_tokens:
             # Read the cached prefix through the stack (the storage read path)
-            await self.kv.retrieve(tokens[:hit_tokens])
+            with spans.span(
+                "kv.retrieve", tokens=hit_tokens, chunks=hit_tokens // self.chunk_size
+            ) as sp:
+                retrieved = await self.kv.retrieve(tokens[:hit_tokens])
+                sp.set(retrieved_tokens=retrieved)
 
         miss_tokens = num_tokens - hit_tokens
         if miss_tokens:
             # Simulate prefill compute for the uncached suffix, which
             # attends to the cached prefix
-            prefill_latency = self._calculate_prefill_latency_ms(
-                miss_tokens, context_tokens=hit_tokens
-            )
-            await asyncio.sleep(prefill_latency / 1000)
+            timing = self.timing.prefill_latency(miss_tokens, context_tokens=hit_tokens)
+            with spans.span(
+                "prefill.compute",
+                miss_tokens=miss_tokens,
+                context_tokens=hit_tokens,
+                emulated_ms=round(timing.total_ms, 3),
+                compute_bound=timing.is_compute_bound,
+                breakdown={k: round(v, 3) for k, v in timing.breakdown.items()},
+            ):
+                await asyncio.sleep(timing.total_ms / 1000)
 
             # Store new full chunks only, matching the classic
             # LMCacheConnectorV1 path: the trailing partial chunk is never
@@ -220,28 +241,49 @@ class CombinedServer:
             # emitted at all (vllm_v1_adapter skip rule).
             store_end = (num_tokens // self.chunk_size) * self.chunk_size
             if store_end > hit_tokens:
-                await self.kv.store(tokens[:store_end], skip_leading=hit_tokens)
+                with spans.span(
+                    "kv.store",
+                    tokens=store_end,
+                    skip_leading=hit_tokens,
+                    chunks=(store_end - hit_tokens) // self.chunk_size,
+                ):
+                    await self.kv.store(tokens[:store_end], skip_leading=hit_tokens)
 
         cache_hits = hit_tokens // self.chunk_size
         cache_misses = (miss_tokens + self.chunk_size - 1) // self.chunk_size
 
         return num_tokens, cache_hits, cache_misses
 
+    def _decode_step(
+        self, i: int, context_len: int, emulated_ms: float, token_ts: list[float], start: float
+    ) -> AbstractContextManager[Any]:
+        """Span for one decode step, or a timestamp-array entry when steps are off."""
+        if spans.get_tracer() is None:
+            return nullcontext()
+        if self.trace_decode_steps:
+            return spans.span(
+                "decode.step", i=i, context_len=context_len, emulated_ms=round(emulated_ms, 3)
+            )
+        return _TokenTimestamp(token_ts, start)
+
     async def chat_completions_stream(
         self,
         request: ChatCompletionRequest,
+        completion_id: str | None = None,
     ) -> AsyncIterator[str]:
         """Handle a streaming chat completion request.
 
         Args:
             request: The chat completion request.
+            completion_id: Pre-generated completion id (the HTTP layer uses
+                it as the trace id); generated when omitted.
 
         Yields:
             SSE-formatted chunks.
         """
         self.stats.requests_total += 1
         start_time = time.time()
-        completion_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
+        completion_id = completion_id or f"chatcmpl-{uuid.uuid4().hex[:24]}"
 
         try:
             # Prefill phase
@@ -251,31 +293,44 @@ class CombinedServer:
             self.stats.cache_hits += hits
             self.stats.cache_misses += misses
 
-            # Send initial chunk
+            # Send initial chunk (role only, before the first decode step:
+            # this is what a streaming client measures as TTFT)
             start_chunk = ChatCompletionChunk.create_start(
                 model=self.model_name,
                 completion_id=completion_id,
             )
+            spans.mark("response.first_chunk")
             yield start_chunk.to_sse()
 
             # Decode phase
             max_tokens = request.output_token_limit or 100
             context_length = num_prompt_tokens
             tokens_generated = 0
+            emulated_total = 0.0
+            token_ts: list[float] = []
 
-            for i in range(max_tokens):
-                latency_ms = self._calculate_decode_latency_ms(context_length + i)
-                await asyncio.sleep(latency_ms / 1000)
-
-                token = self._generate_mock_token(i)
-                tokens_generated += 1
-
-                content_chunk = ChatCompletionChunk.create_content(
-                    model=self.model_name,
-                    content=token,
-                    completion_id=completion_id,
-                )
-                yield content_chunk.to_sse()
+            with spans.span(
+                "decode", context_length=context_length, max_tokens=max_tokens
+            ) as decode_span:
+                decode_start = time.perf_counter()
+                for i in range(max_tokens):
+                    latency_ms = self._calculate_decode_latency_ms(context_length + i)
+                    emulated_total += latency_ms
+                    with self._decode_step(
+                        i, context_length + i, latency_ms, token_ts, decode_start
+                    ):
+                        await asyncio.sleep(latency_ms / 1000)
+                        token = self._generate_mock_token(i)
+                        content_chunk = ChatCompletionChunk.create_content(
+                            model=self.model_name,
+                            content=token,
+                            completion_id=completion_id,
+                        )
+                    tokens_generated += 1
+                    yield content_chunk.to_sse()
+                decode_span.set(generated=tokens_generated, emulated_ms_total=round(emulated_total, 3))
+                if token_ts:
+                    decode_span.set(token_ts_ms=token_ts)
 
             # Final chunk
             end_chunk = ChatCompletionChunk.create_end(
@@ -283,6 +338,7 @@ class CombinedServer:
                 completion_id=completion_id,
                 finish_reason="stop",
             )
+            spans.mark("response.end", finish_reason="stop", generated=tokens_generated)
             yield end_chunk.to_sse()
             yield "data: [DONE]\n\n"
 
@@ -295,23 +351,28 @@ class CombinedServer:
         except Exception as e:
             self.stats.requests_failed += 1
             logger.error(f"Streaming request failed: {e}")
+            spans.mark("response.error", error=type(e).__name__, error_msg=str(e)[:200])
             error_response = ErrorResponse.create(str(e), "server_error")
             yield f"data: {error_response.model_dump_json()}\n\n"
 
     async def chat_completions(
         self,
         request: ChatCompletionRequest,
+        completion_id: str | None = None,
     ) -> ChatCompletionResponse | ErrorResponse:
         """Handle a non-streaming chat completion request.
 
         Args:
             request: The chat completion request.
+            completion_id: Pre-generated completion id (the HTTP layer uses
+                it as the trace id); generated when omitted.
 
         Returns:
             A ChatCompletionResponse or ErrorResponse.
         """
         self.stats.requests_total += 1
         start_time = time.time()
+        completion_id = completion_id or f"chatcmpl-{uuid.uuid4().hex[:24]}"
 
         try:
             # Prefill phase
@@ -326,14 +387,28 @@ class CombinedServer:
             context_length = num_prompt_tokens
             generated_text = ""
             tokens_generated = 0
+            emulated_total = 0.0
+            token_ts: list[float] = []
 
-            for i in range(max_tokens):
-                latency_ms = self._calculate_decode_latency_ms(context_length + i)
-                await asyncio.sleep(latency_ms / 1000)
+            with spans.span(
+                "decode", context_length=context_length, max_tokens=max_tokens
+            ) as decode_span:
+                decode_start = time.perf_counter()
+                for i in range(max_tokens):
+                    latency_ms = self._calculate_decode_latency_ms(context_length + i)
+                    emulated_total += latency_ms
+                    with self._decode_step(
+                        i, context_length + i, latency_ms, token_ts, decode_start
+                    ):
+                        await asyncio.sleep(latency_ms / 1000)
+                        token = self._generate_mock_token(i)
+                    generated_text += token
+                    tokens_generated += 1
+                decode_span.set(generated=tokens_generated, emulated_ms_total=round(emulated_total, 3))
+                if token_ts:
+                    decode_span.set(token_ts_ms=token_ts)
 
-                token = self._generate_mock_token(i)
-                generated_text += token
-                tokens_generated += 1
+            spans.mark("response.end", finish_reason="stop", generated=tokens_generated)
 
             # Update stats
             elapsed_ms = (time.time() - start_time) * 1000
@@ -347,11 +422,13 @@ class CombinedServer:
                 prompt_tokens=num_prompt_tokens,
                 completion_tokens=tokens_generated,
                 finish_reason="stop",
+                completion_id=completion_id,
             )
 
         except Exception as e:
             self.stats.requests_failed += 1
             logger.error(f"Request failed: {e}")
+            spans.mark("response.error", error=type(e).__name__, error_msg=str(e)[:200])
             return ErrorResponse.create(str(e), "server_error")
 
     async def list_models(self) -> ModelList:
@@ -406,3 +483,17 @@ class CombinedServer:
             f"model={self.model_name!r}, "
             f"tokens={self.stats.total_tokens})"
         )
+
+
+class _TokenTimestamp:
+    """Records when a decode step finished, relative to decode start (ms)."""
+
+    def __init__(self, sink: list[float], start: float) -> None:
+        self._sink = sink
+        self._start = start
+
+    def __enter__(self) -> None:
+        return None
+
+    def __exit__(self, *exc: object) -> None:
+        self._sink.append(round((time.perf_counter() - self._start) * 1000, 3))

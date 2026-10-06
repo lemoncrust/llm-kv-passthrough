@@ -111,6 +111,17 @@ class Tracer:
         self._closed = False
         self._unflushed = 0
         self._last_flush = time.monotonic()
+        # Flush on a timer too, so a trace can be tailed during a run even
+        # when no new spans arrive to trigger the write-time flush policy.
+        self._stop = threading.Event()
+        self._flusher = threading.Thread(
+            target=self._flush_loop, name="kvbench-trace-flush", daemon=True
+        )
+        self._flusher.start()
+
+    def _flush_loop(self) -> None:
+        while not self._stop.wait(self.FLUSH_EVERY_SECONDS):
+            self.flush()
 
     # -- spans -----------------------------------------------------------
 
@@ -226,14 +237,19 @@ class Tracer:
         with self._lock:
             if not self._closed:
                 self._fh.flush()
+                self._unflushed = 0
+                self._last_flush = time.monotonic()
 
     def close(self) -> None:
+        self._stop.set()
         with self._lock:
             if self._closed:
                 return
             self._closed = True
             self._fh.flush()
             self._fh.close()
+        if threading.current_thread() is not self._flusher:
+            self._flusher.join(timeout=2.0)
 
 
 # -- module-level API (what instrumented code uses) -------------------------------

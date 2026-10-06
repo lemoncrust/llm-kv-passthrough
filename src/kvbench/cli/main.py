@@ -48,6 +48,12 @@ def serve(
         help="Record every KV storage operation (logical + file I/O) to this "
         "JSONL file, for `kvbench trace2fio`",
     ),
+    trace_decode_steps: bool | None = typer.Option(
+        None,
+        "--trace-decode-steps/--no-trace-decode-steps",
+        help="With --trace-file: one span per generated token (default) or a "
+        "per-token timestamp array on the decode span",
+    ),
     random_fill: bool | None = typer.Option(
         None,
         "--random-fill/--no-random-fill",
@@ -149,6 +155,7 @@ def serve(
         for key, value in {
             "lmcache_config_file": lmcache_config,
             "trace_file": trace_file,
+            "trace_decode_steps": trace_decode_steps,
             "random_fill": random_fill,
         }.items()
         if value is not None

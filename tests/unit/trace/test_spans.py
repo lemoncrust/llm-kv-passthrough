@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
+import time
 
 import pytest
 
@@ -236,3 +237,22 @@ class TestTracer:
             pass
         recs = read(tracer)
         assert recs[0]["attrs"]["path"] == str(tracer.path)
+
+    def test_periodic_flush_makes_trace_readable_live(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(spans.Tracer, "FLUSH_EVERY_SECONDS", 0.05)
+        tracer = spans.install(tmp_path / "live.jsonl")
+        try:
+            with spans.root("first"):
+                pass
+            with spans.root("second"):  # buffered: no write-time flush is due yet
+                pass
+            deadline = time.monotonic() + 2.0
+            while time.monotonic() < deadline:
+                lines = tracer.path.read_text().splitlines()
+                if len(lines) == 2:
+                    break
+                time.sleep(0.02)
+            assert [json.loads(line)["name"] for line in lines] == ["first", "second"]
+        finally:
+            spans.uninstall()
+        assert not tracer._flusher.is_alive()
