@@ -99,8 +99,61 @@ class TraceSummary:
         }
 
 
+# Span names -> (event, op) of the storage-operation view this module
+# analyzes. Other spans (request stages, decode steps, ...) are not storage
+# operations and are skipped.
+_SPAN_EVENTS: dict[str, tuple[str, str]] = {
+    "io.write": ("io", "write"),
+    "io.read": ("io", "read"),
+    "lmcache.put": ("logical", "put"),
+    "lmcache.get": ("logical", "get"),
+    "lmcache.batched_get": ("logical", "get"),
+    "lmcache.contains": ("logical", "contains"),
+    "lmcache.evict": ("logical", "remove"),
+    "lmcache.backend_info": ("meta", "backend_info"),
+}
+
+
+def span_to_event(record: dict[str, Any]) -> dict[str, Any] | None:
+    """Project a span record onto the storage-operation event shape.
+
+    Returns None for spans that are not storage operations.
+    """
+    mapping = _SPAN_EVENTS.get(record.get("name", ""))
+    if mapping is None:
+        return None
+    event, op = mapping
+    attrs = record.get("attrs", {})
+    dur = record.get("dur_ms")
+    start = record.get("start_ms")
+    out: dict[str, Any] = {
+        "event": event,
+        "op": op,
+        "backend": attrs.get("tier"),
+        "ts": record.get("ts"),
+        # Legacy events stamped mono_ms at operation end.
+        "mono_ms": None if start is None else start + (dur or 0.0),
+        "tid": record.get("thread"),
+        "thread": record.get("thread"),
+        "trace_id": record.get("trace_id"),
+    }
+    if "bytes" in attrs:
+        out["size"] = attrs["bytes"]
+    if event != "meta" and dur is not None and record.get("name") != "lmcache.put":
+        out["dur_ms"] = dur
+    for attr in ("path", "chunk_hash", "hit", "use_odirect", "os_disk_bs"):
+        if attr in attrs:
+            out["key" if attr == "chunk_hash" else attr] = attrs[attr]
+    return out
+
+
 def load_events(path: Path | str) -> list[dict[str, Any]]:
-    """Load trace events from a JSONL file (skips unparseable lines)."""
+    """Load storage-operation events from a trace JSONL file.
+
+    Accepts span traces (``name``/``attrs`` records, projected through
+    span_to_event) as well as the older flat event format; unparseable
+    lines are skipped.
+    """
     events = []
     with open(path) as f:
         for line in f:
@@ -108,9 +161,15 @@ def load_events(path: Path | str) -> list[dict[str, Any]]:
             if not line:
                 continue
             try:
-                events.append(json.loads(line))
+                record = json.loads(line)
             except json.JSONDecodeError:
                 continue
+            if "event" in record:
+                events.append(record)
+            else:
+                event = span_to_event(record)
+                if event is not None:
+                    events.append(event)
     return events
 
 

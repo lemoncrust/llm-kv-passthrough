@@ -128,3 +128,55 @@ class TestGenerateFioJob:
         summary = summarize(load_events(p))
         job = generate_fio_job(summary)
         assert "bs=32M" in job
+
+
+class TestSpanTraceCompatibility:
+    """Span traces (the current format) feed the same storage analysis."""
+
+    @staticmethod
+    def span(name, start_ms, dur_ms=0.0, thread="w0", **attrs):
+        return {
+            "trace_id": "t",
+            "span_id": f"{name}-{start_ms}",
+            "parent_id": None,
+            "name": name,
+            "ts": 1000.0 + start_ms / 1000,
+            "start_ms": start_ms,
+            "dur_ms": dur_ms,
+            "thread": thread,
+            "attrs": attrs,
+        }
+
+    def test_span_trace_summarizes_like_legacy_events(self, tmp_path):
+        tier = "LocalDiskBackend"
+        records = [
+            self.span("lmcache.backend_info", 0, tier=tier, use_odirect=True),
+            self.span("request", 5, dur_ms=900, model="m"),  # not a storage op: skipped
+            self.span("lmcache.put", 100, tier=tier, chunk_hash=1, bytes=CHUNK),
+            self.span("io.write", 100, dur_ms=10, thread="w1", tier=tier, path="/c/a", bytes=CHUNK),
+            self.span("io.write", 102, dur_ms=10, thread="w2", tier=tier, path="/c/b", bytes=CHUNK),
+            self.span("decode.step", 200, dur_ms=9, i=0),  # skipped
+            self.span("lmcache.batched_get", 300, dur_ms=6, tier=tier, n=1, n_hit=1, bytes=CHUNK),
+            self.span("io.read", 300, dur_ms=5, thread="w3", tier=tier, path="/c/a", bytes=CHUNK),
+            self.span("lmcache.evict", 400, dur_ms=1, tier=tier, chunk_hash=1, removed=True),
+        ]
+        p = tmp_path / "spans.jsonl"
+        p.write_text("\n".join(json.dumps(r) for r in records) + "\n")
+
+        events = load_events(p)
+        assert len(events) == 7  # request and decode.step are not storage events
+        assert list_backends(events) == [tier]
+        summary = summarize(events, backend=tier)
+        assert summary.io_write.count == 2 and summary.io_write.total_bytes == 2 * CHUNK
+        assert summary.io_write.max_concurrency == 2  # 100-110 overlaps 102-112
+        assert summary.io_write.threads == {"w1", "w2"}
+        assert summary.io_read.count == 1 and summary.io_read.durations_ms == [5]
+        assert summary.logical_put.count == 1 and summary.logical_put.total_bytes == CHUNK
+        assert summary.logical_get.count == 1
+        assert summary.logical_remove.count == 1
+        assert summary.unique_write_paths == 2 and summary.unique_read_paths == 1
+        assert summary.use_odirect is True
+        assert summary.steady_state_files == 1
+        job = generate_fio_job(summary, directory="/mnt/x")
+        assert "rw=write" in job
+

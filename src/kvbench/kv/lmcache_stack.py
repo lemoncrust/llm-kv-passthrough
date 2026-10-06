@@ -170,7 +170,13 @@ class LMCacheStack(KVStack):
             self._connectors.append(connector)
 
             if self._tracer is not None:
-                logger.info(f"KV trace enabled for rank {rank} -> {self.trace_file}")
+                from kvbench.trace.lmcache_hooks import install_lmcache_trace
+
+                wrapped = install_lmcache_trace(engine, self._tracer)
+                logger.info(
+                    f"KV trace enabled for rank {rank} -> {self.trace_file} "
+                    f"(backends: {wrapped})"
+                )
 
         self._engine = self._engines[0]
         self._connector = self._connectors[0]
