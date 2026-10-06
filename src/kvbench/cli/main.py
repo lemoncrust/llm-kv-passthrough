@@ -6,6 +6,8 @@ This module provides the main CLI entry point for KV-Bench.
 
 from __future__ import annotations
 
+import json
+
 import typer
 from rich.console import Console
 from rich.table import Table
@@ -24,6 +26,13 @@ app = typer.Typer(
     add_completion=False,
 )
 console = Console()
+
+trace_app = typer.Typer(
+    name="trace",
+    help="Work with span traces written by `kvbench serve --trace-file`",
+    add_completion=False,
+)
+app.add_typer(trace_app, name="trace")
 
 
 @app.command()
@@ -485,6 +494,51 @@ def info(
     if not gpu and not model:
         console.print("[yellow]Please specify --gpu or --model[/yellow]")
         raise typer.Exit(1)
+
+
+@trace_app.command("tree")
+def trace_tree(
+    trace: str = typer.Argument(..., help="Span trace JSONL file (from serve --trace-file)"),
+    output: str | None = typer.Option(
+        None, "--output", "-o", help="Write nested JSON here instead of stdout"
+    ),
+    request: str | None = typer.Option(
+        None, "--request", "-r", help="Only this request (trace id / X-Request-ID)"
+    ),
+    conversation: str | None = typer.Option(
+        None, "--conversation", "-c", help="Only this conversation (X-Correlation-ID)"
+    ),
+    indent: int = typer.Option(2, "--indent", help="JSON indent (0 = compact)"),
+) -> None:
+    """Assemble a span trace into conversations -> requests -> stage trees (JSON)."""
+    from kvbench.trace.tree import load
+
+    assembled = load(trace)
+    if request is not None:
+        turn = assembled.turn(request)
+        if turn is None:
+            console.print(f"[red]Request {request!r} not found in {trace}[/red]")
+            raise typer.Exit(1)
+        payload: dict = turn.to_dict()
+    elif conversation is not None:
+        conv = assembled.conversation(conversation)
+        if conv is None:
+            console.print(f"[red]Conversation {conversation!r} not found in {trace}[/red]")
+            raise typer.Exit(1)
+        payload = conv.to_dict()
+    else:
+        payload = assembled.to_dict()
+
+    text = json.dumps(payload, indent=indent or None)
+    if output:
+        with open(output, "w") as f:
+            f.write(text + "\n")
+        console.print(
+            f"[green]Wrote {output}[/green] ({assembled.span_count} spans, "
+            f"{len(assembled.conversations)} conversations, {len(assembled.turns)} requests)"
+        )
+    else:
+        print(text)
 
 
 @app.command()
