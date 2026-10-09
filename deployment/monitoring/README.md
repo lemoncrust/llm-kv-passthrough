@@ -1,5 +1,58 @@
 # NVMe WAF monitoring
 
+## Self-updating campaign dashboard
+
+[KV-Bench — Live Campaign](http://172.16.2.20:3000/d/kvbench-campaign) refreshes
+every **10 seconds**, automatically following preparation, idle baseline,
+preconditioning, measurement, drain, and the next arm/run ID. No run selection
+or page reload is needed. It includes:
+
+- Service state, current/next phase, goal and comparison sequence.
+- Phase progress, remaining bytes, estimated time and estimated finish.
+- Filesystem occupancy versus target and completed comparison arms.
+- Host/NAND writes, phase WAF, memory/limit, CPU use and temperature.
+- Source freshness, observer heartbeat and error/qualification indicators.
+
+`kvbench-campaign-watch.service` is a separate **read-only** observer on dev,
+running as `wvaske` with a 128 MiB memory cap and 10% CPU ceiling. It reads the
+atomic experiment snapshot, small artifact manifests/phase summaries, and
+systemd status. It does not restart or modify the frozen benchmark process,
+scan KV payloads, or issue privileged NVMe commands.
+
+Latest status: `/var/lib/kvbench-nvme/campaign-status.json`. Every observation is
+appended to `campaign-status.stream` for the existing Telegraf tail input and
+stored as measurement `kvbench_campaign`. The existing stream logrotate rule
+covers this file. Grafana uses the same `influxdb-telegraf` datasource.
+
+Preparation progress measures the increase from that run's starting occupancy
+to its target, rather than dividing total occupancy by the target. ETA uses
+up to five minutes of observed progress/counter deltas, with an instantaneous
+rate fallback while the window warms. It is approximate and suppressed when
+stale, invalid, stopped or draining. A drain's fixed tail starts only after
+outstanding requests and I/O complete, so the observer does not invent a drain
+completion time. Missing counters/progress are shown as unavailable, not zero.
+
+Live stat queries are anchored to the latest observer timestamp. A missing ETA
+or rate therefore cannot silently show an older valid number as current. The
+heartbeat-age card detects an observer that has stopped. A clean systemd stop
+is distinguished from a completed, qualified experiment. Preparation WAF is
+explicitly labeled as pending qualification, not a cache-comparison result.
+
+Dashboard source: `build_campaign_dashboard.py`; regenerate the provisioned
+`kvbench-campaign.json` with:
+
+```bash
+python deployment/monitoring/build_campaign_dashboard.py
+```
+
+Live deployment uses the existing Grafana file provider on lp-01 at
+`/mnt/configs/configs-grafana-provisioning/dashboards/kvbench-campaign.json`.
+All 32 panel queries were executed through Grafana against live data and
+returned without errors. Tests cover stale/reset telemetry, restarted/stopped
+units, phase/arm transitions, ETA bounds and qualified versus smoke results.
+
+## Device counters and WAF
+
 The read-only sampler collects standard NVMe SMART host writes and OCP SMART
 physical-media writes every **5 seconds**. It appends exact raw integer counters
 and calculated deltas to JSONL, then publishes an append-only Influx stream and

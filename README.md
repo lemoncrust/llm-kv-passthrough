@@ -188,7 +188,9 @@ The [single-drive comparison runner](docs/benchmarking/drive-waf.md) qualifies
 NVMe backing, drive serial, namespaces and occupancy; samples **host and NAND
 bytes** throughout each phase; and requires multiple observed drive fills.
 It also captures bounded `blktrace` samples to measure LBA write ordering.
-The [live Grafana dashboard](http://172.16.2.20:3000/d/kvbench-nvme-waf) shows
+The [live campaign dashboard](http://172.16.2.20:3000/d/kvbench-campaign) follows
+phase changes automatically and shows progress, ETA, resource use and health.
+The [detailed WAF dashboard](http://172.16.2.20:3000/d/kvbench-nvme-waf) shows
 interval/run WAF, rates, occupancy, drive fills and telemetry validity.
 
 ```bash

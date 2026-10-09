@@ -1,5 +1,9 @@
 # Active NVMe campaign — accelerated 2026-10-09
 
+[**Live campaign status and ETA**](http://172.16.2.20:3000/d/kvbench-campaign)
+updates every 10 seconds and follows phase/run transitions automatically.
+The information below is the launch record; use the dashboard for current progress.
+
 **Status as checked at 2026-10-09 18:29 UTC: running, in accelerated filler preparation.**
 There is no qualified endurance result yet. This page records the launch;
 runtime state and final summaries are in the artifacts below.
