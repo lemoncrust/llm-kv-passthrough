@@ -5,10 +5,12 @@ import pytest
 
 from kvbench.benchmark.drive import (
     Experiment,
+    client_limits,
     comparison_signature,
     goal_met,
     load_experiment,
     validate_arms,
+    workload_config,
 )
 from kvbench.benchmark.target import backing_disk, device_lease, fill_target
 from kvbench.core.config import KVBenchConfig
@@ -97,6 +99,42 @@ def test_shipped_endurance_arms_match_before_any_writes():
     experiment = load_experiment(Path(__file__).resolve().parents[2] / "examples/drive-compare.yaml")
     experiment.block_trace_seconds = 0  # optional system tools are tested on the real device
     validate_arms(experiment)
+    assert experiment.producer_count == 160
+
+
+def test_tenfold_load_scales_streams_and_admission_not_request_or_storage_shape(tmp_path):
+    experiment = Experiment(target=tmp_path, controller="/dev/nvme0", expected_serial="test", artifacts=tmp_path,
+                            configs={"lmcache": tmp_path / "a"}, concurrency=16, workload_multiplier=10)
+    base = KVBenchConfig()
+    scaled = workload_config(base, experiment)
+    assert experiment.producer_count == 160
+    assert scaled.scheduler.max_active_requests == 10 * base.scheduler.max_active_requests
+    assert scaled.scheduler.max_pending_requests == 10 * base.scheduler.max_pending_requests
+    assert scaled.kv == base.kv
+    assert scaled.model == base.model and scaled.gpu == base.gpu
+    assert scaled.timing == base.timing
+    assert scaled.scheduler.prefill_tokens_per_second == base.scheduler.prefill_tokens_per_second
+    assert scaled.scheduler.decode_tokens_per_second == base.scheduler.decode_tokens_per_second
+    assert scaled.scheduler.prefill_chunk_tokens == base.scheduler.prefill_chunk_tokens
+    assert client_limits(experiment).max_connections == 160
+    assert client_limits(experiment).max_keepalive_connections == 160
+    assert experiment.workload_info()["multiplier"] == 10
+
+
+@pytest.mark.parametrize("multiplier", [0, -1, 17, 1.5, True])
+def test_invalid_workload_multiplier_fails(tmp_path, multiplier):
+    with pytest.raises(ValueError):
+        Experiment(target=tmp_path, controller="/dev/nvme0", expected_serial="test", artifacts=tmp_path,
+                   configs={"a": tmp_path / "a"}, workload_multiplier=multiplier)
+
+
+def test_scaled_admission_overflow_is_rejected_before_allocation(tmp_path):
+    experiment = Experiment(target=tmp_path, controller="/dev/nvme0", expected_serial="test", artifacts=tmp_path,
+                            configs={"a": tmp_path / "a"}, workload_multiplier=10)
+    base = KVBenchConfig()
+    base.scheduler.max_active_requests = 256
+    with pytest.raises(ValueError, match="max_active_requests"):
+        workload_config(base, experiment)
 
 
 def test_controller_lease_prevents_overlapping_experiments():

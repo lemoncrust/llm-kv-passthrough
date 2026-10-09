@@ -50,6 +50,7 @@ class Experiment(ConfigModel):
     drain_seconds: float = Field(default=300, ge=1)
     max_idle_host_bytes_per_second: float = Field(default=1024**2, ge=0)
     concurrency: int = Field(default=8, ge=1, le=64)
+    workload_multiplier: int = Field(default=1, ge=1, le=16, strict=True)
     prompt_chars: int = Field(default=65536, ge=32, le=1048576)
     output_tokens: int = Field(default=128, ge=1, le=4096)
     seed: int = Field(default=24301, ge=0)
@@ -61,6 +62,18 @@ class Experiment(ConfigModel):
     influx_file: Path | None = None
     block_trace_seconds: int = Field(default=60, ge=0, le=300)
     sudo: bool = True
+
+    @property
+    def producer_count(self) -> int:
+        return self.concurrency * self.workload_multiplier
+
+    def workload_info(self) -> dict[str, Any]:
+        return {"objective": "native write/eviction/address-reuse patterns",
+                "scaling": "offered independent streams; achieved I/O measured separately",
+                "base_concurrency": self.concurrency, "multiplier": self.workload_multiplier,
+                "producer_count": self.producer_count, "prompt_chars": self.prompt_chars,
+                "output_tokens": self.output_tokens,
+                "request_sequence": "deterministic per stream; extra streams increase contention/interleaving"}
 
     @field_validator("configs")
     @classmethod
@@ -113,6 +126,28 @@ def prepared_config(base: KVBenchConfig, disk: Path, output: Path, port: int) ->
     return result
 
 
+def workload_config(base: KVBenchConfig, experiment: Experiment) -> KVBenchConfig:
+    """Scale admission with offered streams, not KV shape, quotas or compute rates.
+
+    Pydantic enforces the scheduler's existing slot/queue limits. No silent
+    clamping: a requested multiplier must fit those bounds before drive writes.
+    """
+    data = base.model_dump(mode="json")
+    data["scheduler"]["max_active_requests"] *= experiment.workload_multiplier
+    data["scheduler"]["max_pending_requests"] *= experiment.workload_multiplier
+    result = KVBenchConfig.model_validate(data)
+    if experiment.producer_count > result.scheduler.max_active_requests + result.scheduler.max_pending_requests:
+        raise ValueError("Offered producer streams exceed the server's active + pending capacity")
+    return result
+
+
+def client_limits(experiment: Experiment) -> httpx.Limits:
+    # HTTPX otherwise queues streams beyond its 100-connection default, hiding
+    # the requested pressure before requests even reach the emulated engine.
+    return httpx.Limits(max_connections=experiment.producer_count,
+                       max_keepalive_connections=experiment.producer_count)
+
+
 def comparison_signature(config: KVBenchConfig, capacity: dict[str, Any]) -> dict[str, Any]:
     return {"model": config.model.cache_identity(), "topology": config.manifest()["kv_rank_selection"],
             "scheduler": config.scheduler.model_dump(), "timing": config.timing.model_dump(),
@@ -132,7 +167,7 @@ def validate_arms(experiment: Experiment) -> None:
 
     expected = None
     for name in dict.fromkeys(experiment.order):
-        config = KVBenchConfig.from_yaml(experiment.configs[name])
+        config = workload_config(KVBenchConfig.from_yaml(experiment.configs[name]), experiment)
         config.validate_serving()
         create_kv_stack(config)  # validates supported rank/profile families without allocation
         selection = config.manifest()["kv_rank_selection"]
@@ -257,7 +292,7 @@ async def workload_phase(client: httpx.AsyncClient, config: KVBenchConfig, exper
             index += 1
 
     sampler = asyncio.create_task(sample_loop())
-    workers = [asyncio.create_task(requests(i)) for i in range(experiment.concurrency)]
+    workers = [asyncio.create_task(requests(i)) for i in range(experiment.producer_count)]
     requested_bytes = (int(report["capacity_bytes"] * drive_fills) if experiment.mode == "endurance"
                        else experiment.smoke_host_bytes)
     minimum = experiment.min_seconds if experiment.mode == "endurance" else experiment.smoke_seconds
@@ -299,6 +334,7 @@ async def workload_phase(client: httpx.AsyncClient, config: KVBenchConfig, exper
         achieved = goal_met(latest["fields"], time.monotonic() - started,
                             min_seconds=minimum, host_bytes=requested_bytes)
     result = {"phase": phase, "arm": arm, "mode": experiment.mode, "goal_met": achieved,
+              "workload": experiment.workload_info(),
               "qualified": experiment.mode == "endurance" and achieved and not errors,
               "requested_host_bytes": requested_bytes, "elapsed_seconds": time.monotonic() - started,
               "counts": counts, "final_fields": latest["fields"], "errors": errors,
@@ -330,10 +366,13 @@ async def compare(experiment: Experiment) -> dict[str, Any]:
     output.mkdir()
     summary: dict[str, Any] = {"run_id": run_id, "status": "running", "qualified": False,
                                "source_revision": source_revision(),
+                               "workload": experiment.workload_info(),
                                "config": experiment.model_dump(mode="json"), "device": report, "arms": []}
     summary_path = output / "experiment.json"
     summary_path.write_text(json.dumps(summary, indent=2))
     print(f"Experiment artifacts: {output}", flush=True)
+    print(f"Offered workload: {experiment.concurrency} × {experiment.workload_multiplier} = "
+          f"{experiment.producer_count} producer streams; native I/O patterns and observed bytes are authoritative", flush=True)
     signature = None
     try:
         for sequence, arm in enumerate(experiment.order):
@@ -345,7 +384,8 @@ async def compare(experiment: Experiment) -> dict[str, Any]:
             with socket.socket() as reservation:
                 reservation.bind(("127.0.0.1", 0))
                 port = reservation.getsockname()[1]
-            config = prepared_config(KVBenchConfig.from_yaml(experiment.configs[arm]), disk, arm_output, port)
+            base = workload_config(KVBenchConfig.from_yaml(experiment.configs[arm]), experiment)
+            config = prepared_config(base, disk, arm_output, port)
             env = {k: v for k, v in os.environ.items() if not k.startswith(("KVBENCH_", "LMCACHE_", "SGLANG_"))}
             env.update(MALLOC_ARENA_MAX="2", OMP_NUM_THREADS="1", OPENBLAS_NUM_THREADS="1",
                        PYTHONDONTWRITEBYTECODE="1", CUDA_VISIBLE_DEVICES="", HIP_VISIBLE_DEVICES="",
@@ -358,6 +398,7 @@ async def compare(experiment: Experiment) -> dict[str, Any]:
                 )
                 try:
                     async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}",
+                                                  limits=client_limits(experiment),
                                                   timeout=config.scheduler.request_timeout_s + 10) as client:
                         async with asyncio.timeout(90):
                             while True:
@@ -370,6 +411,7 @@ async def compare(experiment: Experiment) -> dict[str, Any]:
                                     pass
                                 await asyncio.sleep(0.2)
                         manifest = (await client.get("/kvbench/manifest")).json()
+                        manifest["workload"] = experiment.workload_info()
                         state = (await client.get("/kvbench/state")).json()
                         (arm_output / "manifest.json").write_text(json.dumps(manifest, indent=2))
                         current = comparison_signature(config, state["capacity"])
