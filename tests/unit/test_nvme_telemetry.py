@@ -81,7 +81,10 @@ def test_missing_nand_records_error_not_zero(tmp_path):
     assert record["fields"]["sample_valid"] is False
     assert "nand_bytes_total" not in record["fields"]
     assert "waf" not in (tmp_path / "latest.influx").read_text()
-    assert json.loads((tmp_path / "raw.jsonl").read_text())["error"]
+    assert (tmp_path / "latest.stream").read_text() == (tmp_path / "latest.influx").read_text()
+    collector.collect()
+    assert len((tmp_path / "latest.stream").read_text().splitlines()) == 2
+    assert json.loads((tmp_path / "raw.jsonl").read_text().splitlines()[0])["error"]
 
 
 def test_influx_escaping_and_unknown_waf_not_emitted():

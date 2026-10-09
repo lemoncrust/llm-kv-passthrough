@@ -206,7 +206,12 @@ class Collector:
         with self.output.open("a") as stream:
             stream.write(json.dumps(record, separators=(",", ":")) + "\n")
         if self.influx_file:
-            write_latest(self.influx_file, influx_line(fields, self.tags, timestamp_ns))
+            line = influx_line(fields, self.tags, timestamp_ns)
+            write_latest(self.influx_file, line)
+            # Telegraf tails the companion stream so every sample is delivered,
+            # including phase boundaries and sub-collection-interval samples.
+            with self.influx_file.with_suffix(".stream").open("a") as stream:
+                stream.write(line)
         return record
 
 

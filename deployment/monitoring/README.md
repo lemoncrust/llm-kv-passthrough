@@ -2,8 +2,9 @@
 
 The read-only sampler collects standard NVMe SMART host writes and OCP SMART
 physical-media writes every **5 seconds**. It appends exact raw integer counters
-and calculated deltas to JSONL, then atomically publishes the latest Influx line
-for the existing native Telegraf agent. Grafana uses the `influxdb-telegraf`
+and calculated deltas to JSONL, then publishes an append-only Influx stream and
+an atomic latest-sample snapshot. The native Telegraf agent tails the stream so
+phase changes and fast samples are not lost to polling. Grafana uses the `influxdb-telegraf`
 Flux datasource and `telegraf` bucket.
 
 ## Deployed on dev (2026-10-09)
@@ -13,7 +14,9 @@ Flux datasource and `telegraf` bucket.
 - `/var/lib/kvbench-nvme/samples.jsonl`: raw counters, units implicit in schema,
   timestamps, device identity, interval and run WAF, validity and errors.
 - `/var/lib/kvbench-nvme/latest.influx`: atomically replaced metric sample.
-- `/etc/telegraf/telegraf.d/kvbench-nvme.conf`: 5-second ingestion.
+- `/var/lib/kvbench-nvme/latest.stream`: every monitoring sample for Telegraf.
+- `/var/lib/kvbench-nvme/experiment.stream`: every experiment sample when run.
+- `/etc/telegraf/telegraf.d/kvbench-nvme.conf`: tails all `.stream` files.
 - `/etc/logrotate.d/kvbench-nvme`: seven daily logs. The sampler opens the file
   for each sample, so rename rotation does not lose an open stream.
 - Dashboard provisioned on lp-01 at
