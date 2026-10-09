@@ -93,7 +93,7 @@
           "calcs": [
             "lastNotNull"
           ],
-          "fields": "",
+          "fields": "/^state_label$/",
           "values": false
         },
         "textMode": "value",
@@ -103,7 +103,7 @@
       "targets": [
         {
           "refId": "A",
-          "query": "stamp = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"observer_epoch_seconds\") |> group() |> last() |> keep(columns: [\"_time\"])\nvalue = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"state_label\") |> group()\njoin(tables: {value: value, stamp: stamp}, on: [\"_time\"])"
+          "query": "stamp = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"observer_epoch_seconds\") |> group() |> last() |> keep(columns: [\"_time\"])\nvalue = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"state_label\") |> group()\njoin(tables: {value: value, stamp: stamp}, on: [\"_time\"]) |> keep(columns: [\"_time\", \"_value\"]) |> rename(columns: {_value: \"state_label\"})"
         }
       ]
     },
@@ -133,7 +133,7 @@
           "calcs": [
             "lastNotNull"
           ],
-          "fields": "",
+          "fields": "/^phase_label$/",
           "values": false
         },
         "textMode": "value",
@@ -143,7 +143,7 @@
       "targets": [
         {
           "refId": "A",
-          "query": "stamp = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"observer_epoch_seconds\") |> group() |> last() |> keep(columns: [\"_time\"])\nvalue = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"phase_label\") |> group()\njoin(tables: {value: value, stamp: stamp}, on: [\"_time\"])"
+          "query": "stamp = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"observer_epoch_seconds\") |> group() |> last() |> keep(columns: [\"_time\"])\nvalue = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"phase_label\") |> group()\njoin(tables: {value: value, stamp: stamp}, on: [\"_time\"]) |> keep(columns: [\"_time\", \"_value\"]) |> rename(columns: {_value: \"phase_label\"})"
         }
       ]
     },
@@ -173,7 +173,7 @@
           "calcs": [
             "lastNotNull"
           ],
-          "fields": "",
+          "fields": "/^phase_goal_label$/",
           "values": false
         },
         "textMode": "value",
@@ -183,7 +183,7 @@
       "targets": [
         {
           "refId": "A",
-          "query": "stamp = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"observer_epoch_seconds\") |> group() |> last() |> keep(columns: [\"_time\"])\nvalue = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"phase_goal_label\") |> group()\njoin(tables: {value: value, stamp: stamp}, on: [\"_time\"])"
+          "query": "stamp = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"observer_epoch_seconds\") |> group() |> last() |> keep(columns: [\"_time\"])\nvalue = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"phase_goal_label\") |> group()\njoin(tables: {value: value, stamp: stamp}, on: [\"_time\"]) |> keep(columns: [\"_time\", \"_value\"]) |> rename(columns: {_value: \"phase_goal_label\"})"
         }
       ]
     },
@@ -213,7 +213,7 @@
           "calcs": [
             "lastNotNull"
           ],
-          "fields": "",
+          "fields": "/^next_phase_label$/",
           "values": false
         },
         "textMode": "value",
@@ -223,7 +223,7 @@
       "targets": [
         {
           "refId": "A",
-          "query": "stamp = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"observer_epoch_seconds\") |> group() |> last() |> keep(columns: [\"_time\"])\nvalue = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"next_phase_label\") |> group()\njoin(tables: {value: value, stamp: stamp}, on: [\"_time\"])"
+          "query": "stamp = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"observer_epoch_seconds\") |> group() |> last() |> keep(columns: [\"_time\"])\nvalue = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"next_phase_label\") |> group()\njoin(tables: {value: value, stamp: stamp}, on: [\"_time\"]) |> keep(columns: [\"_time\", \"_value\"]) |> rename(columns: {_value: \"next_phase_label\"})"
         }
       ]
     },
@@ -255,7 +255,7 @@
           "calcs": [
             "lastNotNull"
           ],
-          "fields": "",
+          "fields": "/^phase_progress$/",
           "values": false
         },
         "textMode": "value",
@@ -265,7 +265,7 @@
       "targets": [
         {
           "refId": "A",
-          "query": "stamp = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"observer_epoch_seconds\") |> group() |> last() |> keep(columns: [\"_time\"])\nvalue = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"phase_progress\") |> group()\njoin(tables: {value: value, stamp: stamp}, on: [\"_time\"])"
+          "query": "stamp = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"observer_epoch_seconds\") |> group() |> last() |> keep(columns: [\"_time\"])\nvalue = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"phase_progress\") |> group()\njoin(tables: {value: value, stamp: stamp}, on: [\"_time\"]) |> keep(columns: [\"_time\", \"_value\"]) |> rename(columns: {_value: \"phase_progress\"})"
         }
       ]
     },
@@ -295,7 +295,7 @@
           "calcs": [
             "lastNotNull"
           ],
-          "fields": "",
+          "fields": "/^phase_eta_seconds$/",
           "values": false
         },
         "textMode": "value",
@@ -305,7 +305,7 @@
       "targets": [
         {
           "refId": "A",
-          "query": "stamp = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"observer_epoch_seconds\") |> group() |> last() |> keep(columns: [\"_time\"])\nvalue = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"phase_eta_seconds\") |> group()\njoin(tables: {value: value, stamp: stamp}, on: [\"_time\"])"
+          "query": "stamp = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"observer_epoch_seconds\") |> group() |> last() |> keep(columns: [\"_time\"])\nvalue = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"phase_eta_seconds\") |> group()\njoin(tables: {value: value, stamp: stamp}, on: [\"_time\"]) |> keep(columns: [\"_time\", \"_value\"]) |> rename(columns: {_value: \"phase_eta_seconds\"})"
         }
       ]
     },
@@ -335,7 +335,7 @@
           "calcs": [
             "lastNotNull"
           ],
-          "fields": "",
+          "fields": "/^phase_eta_unix_ms$/",
           "values": false
         },
         "textMode": "value",
@@ -345,7 +345,7 @@
       "targets": [
         {
           "refId": "A",
-          "query": "stamp = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"observer_epoch_seconds\") |> group() |> last() |> keep(columns: [\"_time\"])\nvalue = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"phase_eta_unix_ms\") |> group()\njoin(tables: {value: value, stamp: stamp}, on: [\"_time\"])"
+          "query": "stamp = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"observer_epoch_seconds\") |> group() |> last() |> keep(columns: [\"_time\"])\nvalue = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"phase_eta_unix_ms\") |> group()\njoin(tables: {value: value, stamp: stamp}, on: [\"_time\"]) |> keep(columns: [\"_time\", \"_value\"]) |> rename(columns: {_value: \"phase_eta_unix_ms\"})"
         }
       ]
     },
@@ -375,7 +375,7 @@
           "calcs": [
             "lastNotNull"
           ],
-          "fields": "",
+          "fields": "/^phase_remaining_bytes$/",
           "values": false
         },
         "textMode": "value",
@@ -385,7 +385,7 @@
       "targets": [
         {
           "refId": "A",
-          "query": "stamp = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"observer_epoch_seconds\") |> group() |> last() |> keep(columns: [\"_time\"])\nvalue = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"phase_remaining_bytes\") |> group()\njoin(tables: {value: value, stamp: stamp}, on: [\"_time\"])"
+          "query": "stamp = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"observer_epoch_seconds\") |> group() |> last() |> keep(columns: [\"_time\"])\nvalue = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"phase_remaining_bytes\") |> group()\njoin(tables: {value: value, stamp: stamp}, on: [\"_time\"]) |> keep(columns: [\"_time\", \"_value\"]) |> rename(columns: {_value: \"phase_remaining_bytes\"})"
         }
       ]
     },
@@ -417,7 +417,7 @@
           "calcs": [
             "lastNotNull"
           ],
-          "fields": "",
+          "fields": "/^occupancy$/",
           "values": false
         },
         "textMode": "value",
@@ -427,7 +427,7 @@
       "targets": [
         {
           "refId": "A",
-          "query": "stamp = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"observer_epoch_seconds\") |> group() |> last() |> keep(columns: [\"_time\"])\nvalue = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"occupancy\") |> group()\njoin(tables: {value: value, stamp: stamp}, on: [\"_time\"])"
+          "query": "stamp = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"observer_epoch_seconds\") |> group() |> last() |> keep(columns: [\"_time\"])\nvalue = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"occupancy\") |> group()\njoin(tables: {value: value, stamp: stamp}, on: [\"_time\"]) |> keep(columns: [\"_time\", \"_value\"]) |> rename(columns: {_value: \"occupancy\"})"
         }
       ]
     },
@@ -457,7 +457,7 @@
           "calcs": [
             "lastNotNull"
           ],
-          "fields": "",
+          "fields": "/^run_host_bytes$/",
           "values": false
         },
         "textMode": "value",
@@ -467,7 +467,7 @@
       "targets": [
         {
           "refId": "A",
-          "query": "stamp = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"observer_epoch_seconds\") |> group() |> last() |> keep(columns: [\"_time\"])\nvalue = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"run_host_bytes\") |> group()\njoin(tables: {value: value, stamp: stamp}, on: [\"_time\"])"
+          "query": "stamp = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"observer_epoch_seconds\") |> group() |> last() |> keep(columns: [\"_time\"])\nvalue = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"run_host_bytes\") |> group()\njoin(tables: {value: value, stamp: stamp}, on: [\"_time\"]) |> keep(columns: [\"_time\", \"_value\"]) |> rename(columns: {_value: \"run_host_bytes\"})"
         }
       ]
     },
@@ -497,7 +497,7 @@
           "calcs": [
             "lastNotNull"
           ],
-          "fields": "",
+          "fields": "/^run_nand_bytes$/",
           "values": false
         },
         "textMode": "value",
@@ -507,7 +507,7 @@
       "targets": [
         {
           "refId": "A",
-          "query": "stamp = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"observer_epoch_seconds\") |> group() |> last() |> keep(columns: [\"_time\"])\nvalue = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"run_nand_bytes\") |> group()\njoin(tables: {value: value, stamp: stamp}, on: [\"_time\"])"
+          "query": "stamp = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"observer_epoch_seconds\") |> group() |> last() |> keep(columns: [\"_time\"])\nvalue = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"run_nand_bytes\") |> group()\njoin(tables: {value: value, stamp: stamp}, on: [\"_time\"]) |> keep(columns: [\"_time\", \"_value\"]) |> rename(columns: {_value: \"run_nand_bytes\"})"
         }
       ]
     },
@@ -538,7 +538,7 @@
           "calcs": [
             "lastNotNull"
           ],
-          "fields": "",
+          "fields": "/^waf_run$/",
           "values": false
         },
         "textMode": "value",
@@ -548,7 +548,7 @@
       "targets": [
         {
           "refId": "A",
-          "query": "stamp = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"observer_epoch_seconds\") |> group() |> last() |> keep(columns: [\"_time\"])\nvalue = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"waf_run\") |> group()\njoin(tables: {value: value, stamp: stamp}, on: [\"_time\"])"
+          "query": "stamp = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"observer_epoch_seconds\") |> group() |> last() |> keep(columns: [\"_time\"])\nvalue = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"waf_run\") |> group()\njoin(tables: {value: value, stamp: stamp}, on: [\"_time\"]) |> keep(columns: [\"_time\", \"_value\"]) |> rename(columns: {_value: \"waf_run\"})"
         }
       ]
     },
@@ -579,7 +579,7 @@
           "calcs": [
             "lastNotNull"
           ],
-          "fields": "",
+          "fields": "/^completed_arms$/",
           "values": false
         },
         "textMode": "value",
@@ -589,7 +589,7 @@
       "targets": [
         {
           "refId": "A",
-          "query": "stamp = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"observer_epoch_seconds\") |> group() |> last() |> keep(columns: [\"_time\"])\nvalue = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"completed_arms\") |> group()\njoin(tables: {value: value, stamp: stamp}, on: [\"_time\"])"
+          "query": "stamp = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"observer_epoch_seconds\") |> group() |> last() |> keep(columns: [\"_time\"])\nvalue = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"completed_arms\") |> group()\njoin(tables: {value: value, stamp: stamp}, on: [\"_time\"]) |> keep(columns: [\"_time\", \"_value\"]) |> rename(columns: {_value: \"completed_arms\"})"
         }
       ]
     },
@@ -621,7 +621,7 @@
           "calcs": [
             "lastNotNull"
           ],
-          "fields": "",
+          "fields": "/^comparison_progress$/",
           "values": false
         },
         "textMode": "value",
@@ -631,7 +631,7 @@
       "targets": [
         {
           "refId": "A",
-          "query": "stamp = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"observer_epoch_seconds\") |> group() |> last() |> keep(columns: [\"_time\"])\nvalue = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"comparison_progress\") |> group()\njoin(tables: {value: value, stamp: stamp}, on: [\"_time\"])"
+          "query": "stamp = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"observer_epoch_seconds\") |> group() |> last() |> keep(columns: [\"_time\"])\nvalue = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"comparison_progress\") |> group()\njoin(tables: {value: value, stamp: stamp}, on: [\"_time\"]) |> keep(columns: [\"_time\", \"_value\"]) |> rename(columns: {_value: \"comparison_progress\"})"
         }
       ]
     },
@@ -686,7 +686,7 @@
           "calcs": [
             "lastNotNull"
           ],
-          "fields": "",
+          "fields": "/^qualification_label$/",
           "values": false
         },
         "textMode": "value",
@@ -696,7 +696,7 @@
       "targets": [
         {
           "refId": "A",
-          "query": "stamp = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"observer_epoch_seconds\") |> group() |> last() |> keep(columns: [\"_time\"])\nvalue = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"qualification_label\") |> group()\njoin(tables: {value: value, stamp: stamp}, on: [\"_time\"])"
+          "query": "stamp = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"observer_epoch_seconds\") |> group() |> last() |> keep(columns: [\"_time\"])\nvalue = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"qualification_label\") |> group()\njoin(tables: {value: value, stamp: stamp}, on: [\"_time\"]) |> keep(columns: [\"_time\", \"_value\"]) |> rename(columns: {_value: \"qualification_label\"})"
         }
       ]
     },
@@ -918,7 +918,7 @@
           "calcs": [
             "lastNotNull"
           ],
-          "fields": "",
+          "fields": "/^observer_ok$/",
           "values": false
         },
         "textMode": "value",
@@ -928,7 +928,7 @@
       "targets": [
         {
           "refId": "A",
-          "query": "stamp = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"observer_epoch_seconds\") |> group() |> last() |> keep(columns: [\"_time\"])\nvalue = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"observer_ok\") |> group()\njoin(tables: {value: value, stamp: stamp}, on: [\"_time\"])"
+          "query": "stamp = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"observer_epoch_seconds\") |> group() |> last() |> keep(columns: [\"_time\"])\nvalue = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"observer_ok\") |> group()\njoin(tables: {value: value, stamp: stamp}, on: [\"_time\"]) |> keep(columns: [\"_time\", \"_value\"]) |> rename(columns: {_value: \"observer_ok\"})"
         }
       ]
     },
@@ -973,7 +973,7 @@
           "calcs": [
             "lastNotNull"
           ],
-          "fields": "",
+          "fields": "/^telemetry_ok$/",
           "values": false
         },
         "textMode": "value",
@@ -983,7 +983,7 @@
       "targets": [
         {
           "refId": "A",
-          "query": "stamp = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"observer_epoch_seconds\") |> group() |> last() |> keep(columns: [\"_time\"])\nvalue = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"telemetry_ok\") |> group()\njoin(tables: {value: value, stamp: stamp}, on: [\"_time\"])"
+          "query": "stamp = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"observer_epoch_seconds\") |> group() |> last() |> keep(columns: [\"_time\"])\nvalue = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"telemetry_ok\") |> group()\njoin(tables: {value: value, stamp: stamp}, on: [\"_time\"]) |> keep(columns: [\"_time\", \"_value\"]) |> rename(columns: {_value: \"telemetry_ok\"})"
         }
       ]
     },
@@ -1026,7 +1026,7 @@
           "calcs": [
             "lastNotNull"
           ],
-          "fields": "",
+          "fields": "/^telemetry_age_seconds$/",
           "values": false
         },
         "textMode": "value",
@@ -1036,7 +1036,7 @@
       "targets": [
         {
           "refId": "A",
-          "query": "stamp = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"observer_epoch_seconds\") |> group() |> last() |> keep(columns: [\"_time\"])\nvalue = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"telemetry_age_seconds\") |> group()\njoin(tables: {value: value, stamp: stamp}, on: [\"_time\"])"
+          "query": "stamp = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"observer_epoch_seconds\") |> group() |> last() |> keep(columns: [\"_time\"])\nvalue = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"telemetry_age_seconds\") |> group()\njoin(tables: {value: value, stamp: stamp}, on: [\"_time\"]) |> keep(columns: [\"_time\", \"_value\"]) |> rename(columns: {_value: \"telemetry_age_seconds\"})"
         }
       ]
     },
@@ -1079,7 +1079,7 @@
           "calcs": [
             "lastNotNull"
           ],
-          "fields": "",
+          "fields": "/^observer_epoch_seconds$/",
           "values": false
         },
         "textMode": "value",
@@ -1089,7 +1089,7 @@
       "targets": [
         {
           "refId": "A",
-          "query": "stamp = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"observer_epoch_seconds\") |> group() |> last() |> keep(columns: [\"_time\"])\nvalue = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"observer_epoch_seconds\") |> group()\njoin(tables: {value: value, stamp: stamp}, on: [\"_time\"]) |> map(fn: (r) => ({r with _value: float(v: uint(v: now())) / 1000000000.0 - r._value}))"
+          "query": "stamp = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"observer_epoch_seconds\") |> group() |> last() |> keep(columns: [\"_time\"])\nvalue = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"observer_epoch_seconds\") |> group()\njoin(tables: {value: value, stamp: stamp}, on: [\"_time\"]) |> keep(columns: [\"_time\", \"_value\"]) |> rename(columns: {_value: \"observer_epoch_seconds\"}) |> map(fn: (r) => ({r with observer_epoch_seconds: float(v: uint(v: now())) / 1000000000.0 - r.observer_epoch_seconds}))"
         }
       ]
     },
@@ -1119,7 +1119,7 @@
           "calcs": [
             "lastNotNull"
           ],
-          "fields": "",
+          "fields": "/^temperature_celsius$/",
           "values": false
         },
         "textMode": "value",
@@ -1129,7 +1129,7 @@
       "targets": [
         {
           "refId": "A",
-          "query": "stamp = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"observer_epoch_seconds\") |> group() |> last() |> keep(columns: [\"_time\"])\nvalue = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"temperature_celsius\") |> group()\njoin(tables: {value: value, stamp: stamp}, on: [\"_time\"])"
+          "query": "stamp = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"observer_epoch_seconds\") |> group() |> last() |> keep(columns: [\"_time\"])\nvalue = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"temperature_celsius\") |> group()\njoin(tables: {value: value, stamp: stamp}, on: [\"_time\"]) |> keep(columns: [\"_time\", \"_value\"]) |> rename(columns: {_value: \"temperature_celsius\"})"
         }
       ]
     },
@@ -1159,7 +1159,7 @@
           "calcs": [
             "lastNotNull"
           ],
-          "fields": "",
+          "fields": "/^campaign_elapsed_seconds$/",
           "values": false
         },
         "textMode": "value",
@@ -1169,7 +1169,7 @@
       "targets": [
         {
           "refId": "A",
-          "query": "stamp = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"observer_epoch_seconds\") |> group() |> last() |> keep(columns: [\"_time\"])\nvalue = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"campaign_elapsed_seconds\") |> group()\njoin(tables: {value: value, stamp: stamp}, on: [\"_time\"])"
+          "query": "stamp = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"observer_epoch_seconds\") |> group() |> last() |> keep(columns: [\"_time\"])\nvalue = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"campaign_elapsed_seconds\") |> group()\njoin(tables: {value: value, stamp: stamp}, on: [\"_time\"]) |> keep(columns: [\"_time\", \"_value\"]) |> rename(columns: {_value: \"campaign_elapsed_seconds\"})"
         }
       ]
     },
@@ -1199,7 +1199,7 @@
           "calcs": [
             "lastNotNull"
           ],
-          "fields": "",
+          "fields": "/^unit$/",
           "values": false
         },
         "textMode": "value",
@@ -1209,7 +1209,7 @@
       "targets": [
         {
           "refId": "A",
-          "query": "stamp = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"observer_epoch_seconds\") |> group() |> last() |> keep(columns: [\"_time\"])\nvalue = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"unit\") |> group()\njoin(tables: {value: value, stamp: stamp}, on: [\"_time\"])"
+          "query": "stamp = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"observer_epoch_seconds\") |> group() |> last() |> keep(columns: [\"_time\"])\nvalue = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"unit\") |> group()\njoin(tables: {value: value, stamp: stamp}, on: [\"_time\"]) |> keep(columns: [\"_time\", \"_value\"]) |> rename(columns: {_value: \"unit\"})"
         }
       ]
     },
@@ -1239,7 +1239,7 @@
           "calcs": [
             "lastNotNull"
           ],
-          "fields": "",
+          "fields": "/^telemetry_run_id$/",
           "values": false
         },
         "textMode": "value",
@@ -1249,7 +1249,7 @@
       "targets": [
         {
           "refId": "A",
-          "query": "stamp = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"observer_epoch_seconds\") |> group() |> last() |> keep(columns: [\"_time\"])\nvalue = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"telemetry_run_id\") |> group()\njoin(tables: {value: value, stamp: stamp}, on: [\"_time\"])"
+          "query": "stamp = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"observer_epoch_seconds\") |> group() |> last() |> keep(columns: [\"_time\"])\nvalue = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"telemetry_run_id\") |> group()\njoin(tables: {value: value, stamp: stamp}, on: [\"_time\"]) |> keep(columns: [\"_time\", \"_value\"]) |> rename(columns: {_value: \"telemetry_run_id\"})"
         }
       ]
     },
@@ -1279,7 +1279,7 @@
           "calcs": [
             "lastNotNull"
           ],
-          "fields": "",
+          "fields": "/^last_error$/",
           "values": false
         },
         "textMode": "value",
@@ -1289,7 +1289,7 @@
       "targets": [
         {
           "refId": "A",
-          "query": "stamp = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"observer_epoch_seconds\") |> group() |> last() |> keep(columns: [\"_time\"])\nvalue = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"last_error\") |> group()\njoin(tables: {value: value, stamp: stamp}, on: [\"_time\"])"
+          "query": "stamp = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"observer_epoch_seconds\") |> group() |> last() |> keep(columns: [\"_time\"])\nvalue = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"last_error\") |> group()\njoin(tables: {value: value, stamp: stamp}, on: [\"_time\"]) |> keep(columns: [\"_time\", \"_value\"]) |> rename(columns: {_value: \"last_error\"})"
         }
       ]
     },
@@ -1320,7 +1320,7 @@
           "calcs": [
             "lastNotNull"
           ],
-          "fields": "",
+          "fields": "/^workload_streams$/",
           "values": false
         },
         "textMode": "value",
@@ -1330,7 +1330,7 @@
       "targets": [
         {
           "refId": "A",
-          "query": "stamp = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"observer_epoch_seconds\") |> group() |> last() |> keep(columns: [\"_time\"])\nvalue = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"workload_streams\") |> group()\njoin(tables: {value: value, stamp: stamp}, on: [\"_time\"])"
+          "query": "stamp = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"observer_epoch_seconds\") |> group() |> last() |> keep(columns: [\"_time\"])\nvalue = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"workload_streams\") |> group()\njoin(tables: {value: value, stamp: stamp}, on: [\"_time\"]) |> keep(columns: [\"_time\", \"_value\"]) |> rename(columns: {_value: \"workload_streams\"})"
         }
       ]
     },
@@ -1360,7 +1360,7 @@
           "calcs": [
             "lastNotNull"
           ],
-          "fields": "",
+          "fields": "/^artifact_path$/",
           "values": false
         },
         "textMode": "value",
@@ -1370,7 +1370,7 @@
       "targets": [
         {
           "refId": "A",
-          "query": "stamp = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"observer_epoch_seconds\") |> group() |> last() |> keep(columns: [\"_time\"])\nvalue = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"artifact_path\") |> group()\njoin(tables: {value: value, stamp: stamp}, on: [\"_time\"])"
+          "query": "stamp = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"observer_epoch_seconds\") |> group() |> last() |> keep(columns: [\"_time\"])\nvalue = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"artifact_path\") |> group()\njoin(tables: {value: value, stamp: stamp}, on: [\"_time\"]) |> keep(columns: [\"_time\", \"_value\"]) |> rename(columns: {_value: \"artifact_path\"})"
         }
       ]
     }

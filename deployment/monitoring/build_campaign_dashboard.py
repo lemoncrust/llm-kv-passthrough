@@ -17,7 +17,8 @@ def current(field):
     # Anchor every stat to the latest observer point. If ETA/rates are absent
     # because telemetry went stale, do not display an older valid value as live.
     return (f'stamp = {STAMP}\nvalue = {NOW} |> filter(fn: (r) => r._field == "{field}") |> group()\n'
-            'join(tables: {value: value, stamp: stamp}, on: ["_time"])')
+            'join(tables: {value: value, stamp: stamp}, on: ["_time"]) |> keep(columns: ["_time", "_value"]) '
+            f'|> rename(columns: {{_value: "{field}"}})')
 
 
 panels = [{"id": 1, "type": "text", "title": "Live campaign — follows phase/run changes automatically",
@@ -30,7 +31,7 @@ def stat(title, field, x, y, w=4, h=4, unit="none", kind="stat", **defaults):
     panels.append({"id": len(panels) + 1, "type": kind, "title": title,
                    "gridPos": {"x": x, "y": y, "w": w, "h": h}, "datasource": DS,
                    "fieldConfig": {"defaults": {"unit": unit, "noValue": "—", **defaults}, "overrides": []},
-                   "options": {"reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": False},
+                   "options": {"reduceOptions": {"calcs": ["lastNotNull"], "fields": f"/^{field}$/", "values": False},
                                "textMode": "value", "colorMode": "value", "graphMode": "none"},
                    "targets": [{"refId": "A", "query": current(field)}]})
 
@@ -102,7 +103,7 @@ stat("Source sample age", "telemetry_age_seconds", 8, 36, unit="s",
 stat("Observer heartbeat age", "observer_epoch_seconds", 12, 36, unit="s",
      thresholds={"mode": "absolute", "steps": [{"color": "green", "value": None},
                                                  {"color": "red", "value": 30}]})
-panels[-1]["targets"][0]["query"] += ' |> map(fn: (r) => ({r with _value: float(v: uint(v: now())) / 1000000000.0 - r._value}))'
+panels[-1]["targets"][0]["query"] += ' |> map(fn: (r) => ({r with observer_epoch_seconds: float(v: uint(v: now())) / 1000000000.0 - r.observer_epoch_seconds}))'
 stat("Drive temperature", "temperature_celsius", 16, 36, unit="celsius")
 stat("Campaign elapsed", "campaign_elapsed_seconds", 20, 36, unit="dtdurations")
 stat("Unit", "unit", 0, 40, 6)
