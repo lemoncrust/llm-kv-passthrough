@@ -19,6 +19,7 @@ from kvbench.core import (
     list_gpu_profiles,
     list_model_profiles,
 )
+from kvbench.core.ranks import parse_active_ranks, resolve_active_ranks
 
 app = typer.Typer(
     name="kvbench",
@@ -66,6 +67,9 @@ def serve(
     ),
     pp_size: int | None = typer.Option(
         None, "--pp-size", help="Pipeline parallelism size for the emulated GPUs"
+    ),
+    kv_ranks: str | None = typer.Option(
+        None, "--kv-ranks", help="LMCache ranks to run, e.g. 0 or 0,7; 'all' restores every rank. TP/PP sizing and rates are unchanged"
     ),
     simple_timing: bool | None = typer.Option(
         None,
@@ -210,7 +214,7 @@ def serve(
     }
     if timing_updates:
         updates["timing"] = cfg.timing.model_copy(update=timing_updates)
-    kv_updates = {
+    kv_updates: dict[str, Any] = {
         key: value
         for key, value in {
             "lmcache_config_file": lmcache_config,
@@ -219,6 +223,12 @@ def serve(
         }.items()
         if value is not None
     }
+    if kv_ranks is not None:
+        try:
+            # 'all' deliberately writes None, overriding a subset from the file.
+            kv_updates["active_ranks"] = parse_active_ranks(kv_ranks)
+        except ValueError as exc:
+            raise typer.BadParameter(str(exc), param_hint="--kv-ranks") from exc
     if kv_updates:
         updates["kv"] = cfg.kv.model_copy(update=kv_updates)
     if updates:
@@ -240,6 +250,9 @@ def serve(
     if cfg.timing.full_speed:
         console.print("  Timing: FULL SPEED (scheduler sleeps disabled; KV lifecycle unchanged)")
     console.print(f"  KV ranks: TP={cfg.gpu.tp_size}, PP={cfg.timing.pp_size}")
+    modeled_ranks = cfg.gpu.tp_size * cfg.timing.pp_size
+    active_ranks = resolve_active_ranks(modeled_ranks, cfg.kv.active_ranks)
+    console.print(f"  Active LMCache ranks: {active_ranks} ({len(active_ranks)}/{modeled_ranks} modeled)")
 
     # Persist the fully-resolved config and point the app factory at it.
     # This survives uvicorn worker processes and --reload subprocesses,

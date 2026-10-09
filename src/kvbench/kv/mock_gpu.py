@@ -18,7 +18,7 @@ from lmcache.v1.memory_management import MemoryFormat, MemoryObj
 class MockGPUConnector(GPUConnectorInterface):  # type: ignore[misc]  # LMCache's optional interface is untyped
     def __init__(self, num_layers: int, hidden_dim: int, dtype: torch.dtype,
                  random_fill: bool = True, seed: int = 24301, rank: int = 0,
-                 namespace: str = "kvbench"):
+                 namespace: str = "kvbench", planes: int = 2):
         self.num_layers = num_layers
         self.hidden_dim = hidden_dim
         self.dtype = dtype
@@ -26,6 +26,7 @@ class MockGPUConnector(GPUConnectorInterface):  # type: ignore[misc]  # LMCache'
         self.seed = seed
         self.rank = rank
         self.namespace = namespace
+        self.planes = planes
 
     def from_gpu(self, memory_obj: MemoryObj, start: int, end: int, **kwargs: Any) -> None:  # noqa: ARG002 - LMCache interface
         flat = memory_obj.tensor.view(torch.uint8).reshape(-1)
@@ -53,7 +54,7 @@ class MockGPUConnector(GPUConnectorInterface):  # type: ignore[misc]  # LMCache'
         return None
 
     def get_shape(self, num_tokens: int) -> torch.Size:
-        return torch.Size([2, self.num_layers, num_tokens, self.hidden_dim])
+        return torch.Size([self.planes, self.num_layers, num_tokens, self.hidden_dim])
 
     def get_dtype(self) -> torch.dtype:
         return self.dtype

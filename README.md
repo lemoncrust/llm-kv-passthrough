@@ -93,6 +93,12 @@ Unknown fields fail validation. See the [configuration reference](docs/getting-s
 
 ### GPU and model catalogs are files
 
+The [researched model catalog](docs/architecture/model-catalog.md) includes
+DeepSeek V4.1/V4, Qwen3.8, GLM-5.3 and Kimi K3/Linear, with pinned upstream
+sources and explicit KV formats. Cache components distinguish growing KV and
+indexers from bounded windows and fixed recurrent state. Only growing payloads
+are offloaded by V1; the other state is reported separately.
+
 Bundled definitions: `src/kvbench/core/profiles/catalog.yaml`.
 Set `profiles_file: my-profiles.yaml` (or `--profiles`) to add/override entries
 for one run. Definitions are validated and do not mutate a global registry.
@@ -104,15 +110,46 @@ kvbench info --model llama-3.1-8b
 ```
 
 KV dtype is independent of weight dtype. TP partitions KV heads (or replicates
-them when TP exceeds the head count); PP partitions cache-bearing layers.
-Invalid partitions fail. Each logical rank has its own LMCache engine and
+them when TP exceeds the head count); PP placement follows the profile's layer ownership.
+Invalid partitions fail. Each active logical rank has its own LMCache engine and
 artifacts. MLA is represented by replicated latent **byte geometry**, not a
 native serving-framework layout. Hardware memory admission is a level-2 feature.
+
+### Measure one drive from a larger TP/PP system
+
+Keep the full modeled topology and choose which ranks actually run LMCache:
+
+```bash
+# TP=8 geometry and aggregate compute rates; only rank 0 issues storage I/O.
+kvbench serve --config examples/tp8-single-drive.yaml
+
+# Measure two ranks (or any nonempty selection of valid rank IDs).
+kvbench serve --config examples/tp8-single-drive.yaml --kv-ranks 0,7
+
+# Override the example's selection to run all eight ranks.
+kvbench serve --config examples/tp8-single-drive.yaml --kv-ranks all
+```
+
+The YAML setting is `kv.active_ranks: [0]`; omission or `null` runs all ranks.
+Global IDs are `pp_rank * tp_size + tp_rank`. Selecting rank 7 alone retains
+rank 7's identity and TP=8 shard size. Every request still reaches that rank;
+prefill/decode rates remain the configured **whole-engine** rates.
+
+For BF16 Llama 3.1 8B at TP=8, each rank writes **16 KiB/token**, or **4 MiB
+per 256-token chunk**. One selected rank writes one file per chunk; all eight
+write eight files. Point `local_disk` in the LMCache file at the test drive.
+CPU/disk sizes are per active rank; inactive ranks allocate no pools or engines.
+
+Manifests, state and metrics distinguish modeled ranks from active ranks.
+Byte counters, capacity and warmup cover active ranks only, with no automatic
+extrapolation. Cache hits also reflect only those ranks; omitted-rank eviction
+or latency is not simulated. See [rank selection](docs/getting-started/configuration.md#selected-rank-execution)
+for environment configuration and reporting details.
 
 ## Request and storage lifecycle
 
 1. Bound/admit the request; deterministically format and tokenize its history.
-2. Look up and pin the cached prefix across every rank.
+2. Look up and pin the cached prefix across every active rank.
 3. Retrieve it through real LMCache; verify completion; release pins.
 4. Prefill the missing suffix in scheduled slices; submit each newly completed
    KV chunk to LMCache after the corresponding compute slice.

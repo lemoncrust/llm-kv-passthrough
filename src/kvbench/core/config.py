@@ -17,6 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator,
 
 from kvbench.core.gpu_profiles import GPU_PROFILES, GPUProfile, load_gpu_profiles
 from kvbench.core.models import MODEL_PROFILES, ModelProfile, load_model_profiles
+from kvbench.core.ranks import parse_active_ranks, rank_selection_info, resolve_active_ranks
 
 
 class ConfigModel(BaseModel):
@@ -62,6 +63,16 @@ class KVStackConfig(ConfigModel):
     max_cpu_memory_gb: float = Field(default=2.0, gt=0, description="Host guard: maximum aggregate LMCache CPU tier allocation (GiB)")
     max_chunk_mb: int = Field(default=256, ge=1, le=4096, description="Reject a rank chunk larger than this payload guard (MiB)")
     seed: int = Field(default=24301, ge=0, le=2**63 - 1)
+    active_ranks: list[int] | None = Field(
+        default=None,
+        description="Logical KV rank IDs to instantiate (null = all). TP/PP sizing and engine rates remain unchanged. "
+        "Global rank = pp_rank * tp_size + tp_rank; e.g. [0] exercises one TP=8 shard.",
+    )
+
+    @field_validator("active_ranks", mode="before")
+    @classmethod
+    def parse_rank_selection(cls, value: object) -> list[int] | None:
+        return parse_active_ranks(value)
 
     @field_validator("lmcache_config_file", mode="before")
     @classmethod
@@ -408,7 +419,8 @@ class KVBenchConfig(ConfigModel):
             raise ValueError(f"Unknown GPU profile: {self.gpu.gpu_profile!r}")
         self._model = models[self.server.model_profile]
         self._gpu = gpus[self.gpu.gpu_profile]
-        self._model.rank_layout(self.gpu.tp_size, self.timing.pp_size)
+        layout = self._model.rank_layout(self.gpu.tp_size, self.timing.pp_size)
+        resolve_active_ranks(len(layout), self.kv.active_ranks)
         return self
 
     @property
@@ -448,6 +460,9 @@ class KVBenchConfig(ConfigModel):
         return {"fidelity": "rate-v1", "config": self.model_dump(mode="json"),
                 "model": asdict(self.model), "hardware": asdict(self.hardware),
                 "ranks": self.model.rank_layout(self.gpu.tp_size, self.timing.pp_size),
+                "kv_rank_selection": rank_selection_info(
+                    self.model.rank_layout(self.gpu.tp_size, self.timing.pp_size), self.kv.active_ranks
+                ),
                 "versions": versions}
 
     @classmethod

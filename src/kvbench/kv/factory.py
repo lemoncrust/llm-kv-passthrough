@@ -60,6 +60,7 @@ def create_kv_stack(config: KVBenchConfig) -> KVStack:
             max_cpu_memory_gb=config.kv.max_cpu_memory_gb,
             max_chunk_mb=config.kv.max_chunk_mb,
             seed=config.kv.seed,
+            active_ranks=config.kv.active_ranks,
         )
 
     if stack == "kvbm":

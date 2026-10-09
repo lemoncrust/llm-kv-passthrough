@@ -9,6 +9,15 @@ and serializes blocking calls. Cancellation waits for an already-running call
 before cleanup. Every created rank engine is destroyed on close or partial
 startup failure.
 
+By default every modeled TP/PP rank is instantiated. `kv.active_ranks` can select
+any nonempty subset, including a single nonzero rank. The adapter keeps the full
+rank layout for sizing and namespace identity, then creates resources only for
+selected IDs. LMCache metadata retains the modeled world size and original
+global worker IDs. Cache keys and deterministic payloads for a rank therefore
+do not change when peers are omitted. Store/retrieve/lookup/unpin operations
+visit only active engines; prefix completion is checked across those engines.
+Scheduler rates remain aggregate full-engine inputs.
+
 LMCache itself owns prefix hashing, chunk identity, backend allocation,
 tiering, eviction and physical storage I/O. KV-Bench fills manager-allocated
 payloads with deterministic high-entropy bytes; no inference tensors or weights

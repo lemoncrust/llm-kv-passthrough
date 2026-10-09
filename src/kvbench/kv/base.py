@@ -28,6 +28,10 @@ class KVStackStats:
         retrieved_tokens: Total tokens actually retrieved.
         errors: Number of failed operations.
         start_time: When the stack was started.
+
+    Byte counters cover instantiated ranks only. Logical token counters count
+    each sequence once, regardless of rank count. Neither is extrapolated to
+    omitted ranks in a representative-rank benchmark.
     """
 
     lookups: int = 0
