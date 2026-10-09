@@ -61,6 +61,7 @@ class HiCacheStack(KVStack):
         self.stats = KVStackStats()
         self._backends: list[Any] = []
         self._host: list[OrderedDict[str, Any]] = []
+        self._free: list[list[Any]] = []
         self._lock = asyncio.Lock()
         self._lease: tuple[str, asyncio.Task[Any] | None] | None = None
         self._started = False
@@ -123,6 +124,7 @@ class HiCacheStack(KVStack):
             except BaseException:
                 self._backends.clear()
                 self._host.clear()
+                self._free.clear()
                 if self.trace_recorder:
                     self.trace_recorder.close()
                     self.trace_recorder = None
@@ -150,6 +152,7 @@ class HiCacheStack(KVStack):
             )
             self._backends.append(upstream.HiCacheFile(backend_config, str(self.options.storage_path)))
             self._host.append(OrderedDict())
+            self._free.append([])
         if self.config.kv.trace_file:
             self.trace_recorder = TraceRecorder(self.config.kv.trace_file)
             self.trace_recorder.record(event="meta", op="rank_selection", backend="HiCacheFile", **self.selection)
@@ -212,7 +215,9 @@ class HiCacheStack(KVStack):
         if self.options.write_policy == "write_back":
             self._write(index, keys, [host[key] for key in keys])
         for key in keys:
-            del host[key]
+            # Native host pools reuse page slots. Keep our bounded host pages
+            # instead of repeatedly mmap/zero-faulting/freeing multi-MiB tensors.
+            self._free[index].append(host.pop(key))
 
     def _payload(self, index: int, key: str) -> Any:
         import torch
@@ -225,7 +230,8 @@ class HiCacheStack(KVStack):
         if self.options.mem_layout == "page_first":
             shape = (2, self.options.page_size, rank["layers"], rank["width"])
         dtype = {"bf16": torch.bfloat16, "fp16": torch.float16, "fp8": torch.float8_e4m3fn}[self.model.effective_kv_dtype]
-        value = torch.empty(shape, dtype=dtype, device="cpu")
+        value = (self._free[index].pop().view(shape) if self._free[index]
+                 else torch.empty(shape, dtype=dtype, device="cpu"))
         if self.config.kv.random_fill:
             seed = hashlib.sha256(f"{self.config.kv.seed}:{rank['rank']}:{self.namespace}:{key}".encode()).digest()
             seed_int = int.from_bytes(seed[:8], "little") & (2**63 - 1)
@@ -355,6 +361,7 @@ class HiCacheStack(KVStack):
             finally:
                 self._started = False
                 self._host.clear()
+                self._free.clear()
                 self._backends.clear()
                 if self.trace_recorder:
                     self.trace_recorder.close()
@@ -381,7 +388,9 @@ class HiCacheStack(KVStack):
         for index, (host, backend) in enumerate(zip(self._host, self._backends, strict=True)):
             rank = self.active_layout[index]
             result[f"HiCacheHost/rank-{rank['rank']}"] = {"rank": rank["rank"], "keys": len(host),
-                "usage_bytes": len(host) * rank["bytes_per_token"] * self.chunk_size}
+                "usage_bytes": len(host) * rank["bytes_per_token"] * self.chunk_size,
+                "allocated_bytes": (len(host) + len(self._free[index])) * rank["bytes_per_token"] * self.chunk_size,
+                "free_pages": len(self._free[index])}
             result[f"HiCacheFile/rank-{rank['rank']}"] = {"rank": rank["rank"],
                 "keys": len(backend._evictor._lru), "usage_bytes": backend._evictor._total_bytes}
         return result

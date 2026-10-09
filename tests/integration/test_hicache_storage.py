@@ -186,3 +186,33 @@ async def test_pp_uses_native_tp_pp_suffix_and_global_trace_rank(tmp_path):
         assert {e["rank"] for e in load_events(tmp_path / "trace.jsonl") if e["event"] == "io"} == {7}
     finally:
         await stack.close()
+
+
+@pytest.mark.parametrize("policy", ["write_through", "write_back"])
+async def test_host_page_buffers_are_reused_within_the_pool_bound(tmp_path, monkeypatch, policy):
+    import torch
+
+    cfg = config(tmp_path, policy=policy, disk_pages=32)
+    cfg.kv.payload_generator = "sfc64"
+    stack = create_kv_stack(cfg)
+    await stack.start()
+    original = torch.empty
+    allocations = []
+
+    def allocate(*args, **kwargs):
+        allocations.append(args)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(torch, "empty", allocate)
+    try:
+        await stack.store(list(range(40)))  # twenty pages through a two-page pool
+        assert len(allocations) == 2
+        usage = stack.usage_info()["HiCacheHost/rank-7"]
+        assert usage["allocated_bytes"] == 65536
+        assert usage["keys"] + usage["free_pages"] == 2
+        await stack.flush()
+        payloads = [p.read_bytes() for p in (tmp_path / "disk").glob("*.bin")]
+        assert len(payloads) == len(set(payloads)) == 20  # no overwritten/shared or repeated pages
+    finally:
+        await stack.close()
+    assert not stack._free
