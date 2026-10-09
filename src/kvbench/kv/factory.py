@@ -66,6 +66,7 @@ def create_kv_stack(config: KVBenchConfig) -> KVStack:
             max_chunk_mb=config.kv.max_chunk_mb,
             seed=config.kv.seed,
             active_ranks=config.kv.active_ranks,
+            payload_generator=config.kv.payload_generator,
         )
 
     if stack == "kvbm":

@@ -59,6 +59,7 @@ appear in `/kvbench/manifest` with rates, ranks and package versions.
 | `max_cpu_memory_gb` | 2 | Aggregate active-rank CPU-pool allocation guard, GiB |
 | `max_chunk_mb` | 256 | Largest permitted rank-chunk payload, MiB |
 | `random_fill` | true | High-entropy deterministic payloads; false means zeros |
+| `payload_generator` | `torch` | Legacy byte RNG, or `sfc64` for fast word-oriented high-entropy generation |
 | `seed` | 24301 | Payload seed, mixed with rank and token prefix |
 
 LMCache sizes are **per active rank**. The guard checks their sum before creating
@@ -71,6 +72,14 @@ For HiCache, use `kv.stack: hicache` with `kv.hicache.storage_path`, `page_size`
 are also GiB per active rank. See the [HiCache contract](../architecture/hicache.md)
 for installation and the distinction between native L3 storage and V1 host policy.
 Do not pass an LMCache config file to a HiCache run.
+
+`payload_generator: sfc64` uses fresh deterministic SFC64 words, filling existing
+CPU tensors with at most 256 KiB of scratch memory. It preserves payload sizes
+and axis order and uses a separate versioned cache namespace. Both comparison
+arms must use the same generator. This is a statistical PRNG, not cryptographic
+randomness; it does not reuse a repeated random-data pool. NumPy version and
+the selected generator are recorded in manifests. The scratch allocation is
+included in the CPU-memory guard.
 
 ### Selected-rank execution
 

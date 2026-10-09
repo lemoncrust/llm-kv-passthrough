@@ -117,6 +117,7 @@ def comparison_signature(config: KVBenchConfig, capacity: dict[str, Any]) -> dic
     return {"model": config.model.cache_identity(), "topology": config.manifest()["kv_rank_selection"],
             "scheduler": config.scheduler.model_dump(), "timing": config.timing.model_dump(),
             "random_fill": config.kv.random_fill, "seed": config.kv.seed,
+            "payload_generator": config.kv.payload_generator,
             "capacity": {k: capacity[k] for k in ("chunk_size", "stored_bytes_per_token",
                                                  "local_cpu_capacity_bytes", "local_disk_capacity_bytes")}}
 
@@ -440,7 +441,9 @@ async def compare(experiment: Experiment) -> dict[str, Any]:
     return summary
 
 
-async def campaign(experiment: Experiment, rate_mib: float) -> dict[str, Any]:
+async def campaign(experiment: Experiment, rate_mib: float, *,
+                   filler_generator: Literal["system", "sfc64"] = "system",
+                   fsync_bytes: int = 64 * 1024**2) -> dict[str, Any]:
     """Real filler -> qualified A/B campaign, with durable preparation telemetry."""
     if experiment.mode != "endurance":
         raise ValueError("campaign prepares a drive for endurance, not smoke mode")
@@ -460,7 +463,8 @@ async def campaign(experiment: Experiment, rate_mib: float) -> dict[str, Any]:
     output = experiment.artifacts / name
     output.mkdir()
     (output / "campaign.json").write_text(json.dumps({"source_revision": source_revision(),
-        "experiment": experiment.model_dump(mode="json"), "device": report, "rate_mib": rate_mib}, indent=2))
+        "experiment": experiment.model_dump(mode="json"), "device": report, "rate_mib": rate_mib,
+        "filler_generator": filler_generator, "fsync_bytes": fsync_bytes}, indent=2))
     collector = Collector(probe, output / "samples.jsonl", experiment.interval_seconds,
                           run_id=name, adapter="filler", phase="preparation", influx_file=experiment.influx_file)
     record = await asyncio.to_thread(collector.collect)
@@ -470,7 +474,8 @@ async def campaign(experiment: Experiment, rate_mib: float) -> dict[str, Any]:
     stop_filler = threading.Event()
     task = asyncio.create_task(asyncio.to_thread(fill_target, experiment.target / name, probe,
                                                experiment.expected_serial, occupancy=desired_occupancy,
-                                               rate_mib=rate_mib, stop=stop_filler))
+                                               rate_mib=rate_mib, stop=stop_filler, generator=filler_generator,
+                                               fsync_bytes=fsync_bytes))
     print(f"Preparation telemetry: {output}; filler rate {rate_mib:g} MiB/s", flush=True)
     try:
         while not task.done():
@@ -503,19 +508,25 @@ def main() -> None:
     fill.add_argument("--occupancy", type=float, default=0.85)
     fill.add_argument("--rate-mib", type=float, default=128)
     fill.add_argument("--max-bytes", type=int)
+    fill.add_argument("--generator", choices=("system", "sfc64"), default="system")
+    fill.add_argument("--fsync-mib", type=int, default=64)
     run = commands.add_parser("compare", help="Run each configured cache arm until real host-write goals are met")
     run.add_argument("--config", type=Path, required=True)
     run.add_argument("--mode", choices=("endurance", "smoke"))
     full = commands.add_parser("campaign", help="Fill to 85% with paced real data, then run the endurance comparison")
     full.add_argument("--config", type=Path, required=True)
     full.add_argument("--rate-mib", type=float, default=128)
+    full.add_argument("--filler-generator", choices=("system", "sfc64"), default="system")
+    full.add_argument("--fsync-mib", type=int, default=64)
     args = parser.parse_args()
     if args.command in ("compare", "campaign"):
         experiment = load_experiment(args.config)
         if getattr(args, "mode", None):
             experiment.mode = args.mode
         with device_lease(experiment.controller):
-            result = asyncio.run(campaign(experiment, args.rate_mib) if args.command == "campaign" else compare(experiment))
+            result = asyncio.run(campaign(experiment, args.rate_mib, filler_generator=args.filler_generator,
+                                           fsync_bytes=args.fsync_mib * 1024**2)
+                                 if args.command == "campaign" else compare(experiment))
     else:
         probe = NVMeProbe(args.controller, args.target if args.command == "preflight" else args.target.parent, args.sudo, args.expected_serial)
         if args.command == "preflight":
@@ -523,7 +534,8 @@ def main() -> None:
         else:
             with device_lease(args.controller):
                 result = fill_target(args.target, probe, args.expected_serial, occupancy=args.occupancy,
-                                     rate_mib=args.rate_mib, max_bytes=args.max_bytes)
+                                     rate_mib=args.rate_mib, max_bytes=args.max_bytes, generator=args.generator,
+                                     fsync_bytes=args.fsync_mib * 1024**2)
     print(json.dumps(result, indent=2))
 
 

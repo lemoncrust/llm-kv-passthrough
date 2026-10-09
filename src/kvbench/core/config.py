@@ -17,6 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator,
 
 from kvbench.core.gpu_profiles import GPU_PROFILES, GPUProfile, load_gpu_profiles
 from kvbench.core.models import MODEL_PROFILES, ModelProfile, load_model_profiles
+from kvbench.core.payload import PayloadGenerator
 from kvbench.core.ranks import parse_active_ranks, rank_selection_info, resolve_active_ranks
 
 
@@ -74,6 +75,9 @@ class KVStackConfig(ConfigModel):
         description="Fill mock KV tensors with random data so stored bytes are "
         "incompressible like real KV cache (storage systems with compression "
         "or dedup report unrealistically good numbers against zero-filled data)",
+    )
+    payload_generator: PayloadGenerator = Field(
+        default="torch", description="Synthetic entropy source: legacy torch bytes, or bounded fast SFC64 words",
     )
     max_cpu_memory_gb: float = Field(default=2.0, gt=0, description="Host guard: maximum aggregate LMCache CPU tier allocation (GiB)")
     max_chunk_mb: int = Field(default=256, ge=1, le=4096, description="Reject a rank chunk larger than this payload guard (MiB)")
@@ -474,7 +478,7 @@ class KVBenchConfig(ConfigModel):
         from importlib.metadata import PackageNotFoundError, version
 
         versions: dict[str, str | None] = {}
-        for package in ("kvbench", "lmcache", "torch"):
+        for package in ("kvbench", "lmcache", "torch", "numpy"):
             try:
                 versions[package] = version(package)
             except PackageNotFoundError:

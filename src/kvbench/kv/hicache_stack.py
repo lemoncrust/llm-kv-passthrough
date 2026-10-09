@@ -19,6 +19,7 @@ from functools import partial
 from typing import Any, TypeVar
 
 from kvbench.core.config import KVBenchConfig
+from kvbench.core.payload import SFC64_FORMAT, fill_sfc64, scratch_bytes
 from kvbench.core.ranks import rank_selection_info
 from kvbench.kv.base import KVStack, KVStackStats
 from kvbench.kv.hicache_upstream import REVISION, SOURCE_HASHES, VERSION, load_hicache
@@ -54,6 +55,8 @@ class HiCacheStack(KVStack):
                              "MLA owner-rank deduplication and hybrid sidecar pools require separate adapters")
         identity = {"model": self.model.cache_identity(), "page_size": self.options.page_size,
                     "layout": self.options.mem_layout, "tp": config.gpu.tp_size, "pp": config.timing.pp_size}
+        if config.kv.payload_generator == "sfc64":
+            identity["payload_generator"] = SFC64_FORMAT
         self.namespace = "kvbench-" + hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()[:24]
         self.stats = KVStackStats()
         self._backends: list[Any] = []
@@ -105,6 +108,8 @@ class HiCacheStack(KVStack):
             # Guard before importing Torch or creating any backend/payload.
             host_bytes = int(self.options.host_size_gb * 1024**3)
             peak = host_bytes * len(self.active_layout) + max(r["bytes_per_token"] for r in self.active_layout) * self.options.page_size
+            if self.config.kv.random_fill:
+                peak += scratch_bytes(self.config.kv.payload_generator)
             if peak > self.config.kv.max_cpu_memory_gb * 1024**3:
                 raise ValueError("HiCache host pools plus one staging page exceed kv.max_cpu_memory_gb")
             for rank in self.active_layout:
@@ -171,6 +176,8 @@ class HiCacheStack(KVStack):
         return {"sglang_version": VERSION, "sglang_revision": REVISION, "source_hashes": SOURCE_HASHES,
                 "adapter_scope": "real HiCacheFile L3; V1 modeled host tier, not HiRadixTree",
                 "config": self.options.model_dump(mode="json"), "namespace": self.namespace,
+                "payload_generator": self.config.kv.payload_generator,
+                "payload_generator_format": SFC64_FORMAT if self.config.kv.payload_generator == "sfc64" else "torch-byte-v1",
                 "payload_axis_order": "KV,T,L,D" if self.options.mem_layout == "page_first" else "KV,L,T,D",
                 "file_format": "raw page, temporary file + rename", "use_odirect": False,
                 "fsync_per_page": False}
@@ -221,8 +228,14 @@ class HiCacheStack(KVStack):
         value = torch.empty(shape, dtype=dtype, device="cpu")
         if self.config.kv.random_fill:
             seed = hashlib.sha256(f"{self.config.kv.seed}:{rank['rank']}:{self.namespace}:{key}".encode()).digest()
-            generator = torch.Generator(device="cpu").manual_seed(int.from_bytes(seed[:8], "little") & (2**63 - 1))
-            value.view(torch.uint8).random_(0, 256, generator=generator)
+            seed_int = int.from_bytes(seed[:8], "little") & (2**63 - 1)
+            if self.config.kv.payload_generator == "sfc64":
+                import numpy as np
+
+                fill_sfc64(value.view(torch.uint8).numpy(), np.random.SFC64(seed_int))
+            else:
+                generator = torch.Generator(device="cpu").manual_seed(seed_int)
+                value.view(torch.uint8).random_(0, 256, generator=generator)
         else:
             value.zero_()
         return value.flatten()

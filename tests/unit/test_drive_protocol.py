@@ -35,16 +35,18 @@ def test_goals_use_observed_host_bytes_and_duration_not_nand_or_submissions():
     assert goal_met({"run_valid": True, "run_host_bytes": 100}, 60, min_seconds=60, host_bytes=100)
 
 
-def test_filler_is_real_data_bounded_and_does_not_overwrite(tmp_path, monkeypatch):
+@pytest.mark.parametrize("generator", ["system", "sfc64"])
+def test_filler_is_real_data_bounded_and_does_not_overwrite(tmp_path, monkeypatch, generator):
     import kvbench.benchmark.target as module
 
     monkeypatch.setattr(module, "qualify_target", lambda *_a, **_k: {"filesystem_device_id": tmp_path.stat().st_dev})
     existing = tmp_path / "existing.dat"
     existing.write_bytes(b"keep me")
     output = tmp_path / "filler"
-    result = fill_target(output, None, "test", max_bytes=4096, rate_mib=128)
+    result = fill_target(output, None, "test", max_bytes=4096, rate_mib=128, generator=generator)
     assert result["bytes_written"] == 4096
     assert result["status"] == "incomplete"
+    assert result["generator"] == generator
     file = output / "filler-000000.bin"
     assert file.stat().st_size == 4096
     assert file.stat().st_blocks * 512 >= 4096

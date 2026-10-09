@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, ParamSpec, TypeVar
 
 from kvbench.core.models import ModelProfile, get_model_profile
+from kvbench.core.payload import SFC64_FORMAT, PayloadGenerator, scratch_bytes
 from kvbench.core.ranks import rank_selection_info, resolve_active_ranks
 from kvbench.kv.base import KVStack, KVStackStats
 from kvbench.trace.recorder import TraceRecorder
@@ -38,13 +39,18 @@ class LMCacheStack(KVStack):
                  random_fill: bool = True, tp_size: int = 1, pp_size: int = 1,
                  model: ModelProfile | None = None, max_cpu_memory_gb: float = 2.0,
                  max_chunk_mb: int = 256, seed: int = 24301,
-                 active_ranks: list[int] | None = None):
+                 active_ranks: list[int] | None = None,
+                 payload_generator: PayloadGenerator = "torch"):
         self.instance_id = instance_id
         self.model_profile = model_profile
         self.model = model or get_model_profile(model_profile)
         self.config_file = config_file
         self.trace_file = trace_file
         self.random_fill = random_fill
+        if payload_generator not in ("torch", "sfc64"):
+            raise ValueError("Unknown payload_generator")
+        self.payload_generator = payload_generator
+        self.payload_scratch_bytes = scratch_bytes(payload_generator) if random_fill else 0
         self.tp_size = tp_size
         self.pp_size = pp_size
         self.layout = self.model.rank_layout(tp_size, pp_size)
@@ -133,7 +139,7 @@ class LMCacheStack(KVStack):
             raise ValueError(f"V1 supports classic LMCache storage only; unsupported modes: {unsupported}")
         ranks = len(self.layout)
         active_count = len(self.active_layout)
-        aggregate_gb = cfg.max_local_cpu_size * active_count
+        aggregate_gb = cfg.max_local_cpu_size * active_count + self.payload_scratch_bytes / 1024**3
         if aggregate_gb <= 0 or aggregate_gb > self.max_cpu_memory_gb:
             raise ValueError(f"LMCache CPU pools request {aggregate_gb:g} GiB across {active_count} active ranks; "
                              f"kv.max_cpu_memory_gb guard is {self.max_cpu_memory_gb:g}")
@@ -157,12 +163,15 @@ class LMCacheStack(KVStack):
             self._trace_recorder.record(
                 event="meta", op="rank_selection", backend="LMCacheStack",
                 payload_axis_order="KV,L,T,D", memory_format="KV_2LTD",
+                payload_generator=self.payload_generator, payload_scratch_bytes=self.payload_scratch_bytes,
                 **rank_selection_info(self.layout, self.active_rank_ids),
             )
         dtype = {"bf16": torch.bfloat16, "fp16": torch.float16, "fp8": torch.float8_e4m3fn,
                  "packed": torch.uint8}[self.model.effective_kv_dtype]
         fingerprint = hashlib.sha256(json.dumps(self.model.cache_identity(), sort_keys=True).encode()).hexdigest()[:12]
         namespace = f"{self.model_profile}--{fingerprint}--tp{self.tp_size}pp{self.pp_size}"
+        if self.payload_generator == "sfc64":
+            namespace += f"--{SFC64_FORMAT}"
         for rank in self.active_layout:
             index = rank["rank"]
             identifier = f"{self.instance_id}-r{index}"
@@ -180,7 +189,8 @@ class LMCacheStack(KVStack):
                                                  chunk, 1, rank["width"]), chunk_size=chunk)
             connector = MockGPUConnector(rank.get("tensor_layers", rank["layers"]), rank["width"], dtype,
                                          random_fill=self.random_fill, seed=self.seed, rank=index,
-                                         namespace=namespace, planes=rank.get("planes", 2))
+                                         namespace=namespace, planes=rank.get("planes", 2),
+                                         payload_generator=self.payload_generator)
             engine = LMCacheEngineBuilder.get_or_create(identifier, cfg, metadata, connector,
                                                         broadcast_fn=lambda _tensor, _src: None,
                                                         broadcast_object_fn=lambda obj, _src: obj)
@@ -311,6 +321,7 @@ class LMCacheStack(KVStack):
         return {**selection, "chunk_size": self.chunk_size, "bytes_per_token": self.model.total_kv_cache_bytes_per_token,
                 "cache_transport_dtype": self.model.effective_kv_dtype,
                 "payload_axis_order": "KV,L,T,D", "memory_format": "KV_2LTD",
+                "payload_generator": self.payload_generator, "payload_scratch_bytes": self.payload_scratch_bytes,
                 "cache_scope": "growing KV payload only; window/fixed state is not offloaded",
                 "cache_token_alignment": self.model.cache_token_alignment,
                 "chunk_bytes": stored * self.chunk_size, "stored_bytes_per_token": stored,

@@ -13,9 +13,10 @@ import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from kvbench.benchmark.nvme import NVMeProbe, command_json
+from kvbench.core.payload import SFC64_FORMAT, fill_sfc64
 
 
 @contextmanager
@@ -90,8 +91,10 @@ def qualify_target(target: Path, probe: NVMeProbe, expected_serial: str,
 
 
 def fill_target(target: Path, probe: NVMeProbe, expected_serial: str, *, occupancy: float = 0.85,
-                rate_mib: float = 128, max_bytes: int | None = None,
-                stop: threading.Event | None = None) -> dict[str, Any]:
+                 rate_mib: float = 128, max_bytes: int | None = None,
+                stop: threading.Event | None = None,
+                generator: Literal["system", "sfc64"] = "system",
+                fsync_bytes: int = 64 * 1024**2) -> dict[str, Any]:
     """Create a NEW dedicated filler directory; never truncate existing files.
 
     Writes real random payload, fsyncs each 64 MiB, and preserves the files. A
@@ -102,11 +105,22 @@ def fill_target(target: Path, probe: NVMeProbe, expected_serial: str, *, occupan
         raise ValueError("Filler target occupancy must be between 80% and 90%")
     if not math.isfinite(rate_mib) or rate_mib <= 0 or (max_bytes is not None and max_bytes <= 0):
         raise ValueError("Filler rate and byte bound must be positive")
+    if generator not in ("system", "sfc64") or fsync_bytes <= 0:
+        raise ValueError("Invalid filler generator or fsync interval")
     report = qualify_target(target.parent, probe, expected_serial, min_occupancy=0, max_occupancy=0.95)
     target.mkdir(exist_ok=False)
     manifest = target / "filler-manifest.json"
-    manifest.write_text(json.dumps({"status": "writing", "target_occupancy": occupancy, "device": report,
-                                    "method": "random buffered writes, fsync every 64 MiB"}, indent=2))
+    base = {"target_occupancy": occupancy, "device": report, "generator": generator,
+            "rate_mib": rate_mib, "fsync_bytes": fsync_bytes, "method": "fresh random buffered writes"}
+    buffer, rng = None, None
+    if generator == "sfc64":
+        import numpy as np
+
+        seed = int.from_bytes(os.urandom(16), "little")
+        rng = np.random.SFC64(seed)
+        buffer = np.empty(8 * 1024**2, dtype=np.uint8)
+        base.update(seed=seed, generator_format=SFC64_FORMAT, numpy_version=np.__version__)
+    manifest.write_text(json.dumps({**base, "status": "writing", "bytes_written": 0}, indent=2))
     written = 0
     stop = stop or threading.Event()
     started = time.monotonic()
@@ -129,8 +143,12 @@ def fill_target(target: Path, probe: NVMeProbe, expected_serial: str, *, occupan
                     usage = shutil.disk_usage(target)
                     if usage.free < max(64 * 1024**2, int(usage.total * 0.05)):
                         raise RuntimeError("Filler stopped at 5% free-space floor")
-                    payload = os.urandom(min(8 * 1024**2, remaining))
-                    view = memoryview(payload)
+                    count_bytes = min(8 * 1024**2, remaining)
+                    if buffer is not None and rng is not None:
+                        fill_sfc64(buffer[:count_bytes], rng)
+                        view = buffer[:count_bytes].data
+                    else:
+                        view = memoryview(os.urandom(count_bytes))
                     while view:
                         count = stream.write(view)
                         if not count:
@@ -139,19 +157,18 @@ def fill_target(target: Path, probe: NVMeProbe, expected_serial: str, *, occupan
                         written += count
                         remaining -= count
                         unflushed += count
-                    if unflushed >= 64 * 1024**2:
+                    if unflushed >= fsync_bytes:
                         os.fsync(stream.fileno())
                         unflushed = 0
                     stop.wait(max(0, written / (rate_mib * 1024**2) - (time.monotonic() - started)))
                 os.fsync(stream.fileno())
             file_index += 1
-            manifest.write_text(json.dumps({"status": "writing", "bytes_written": written, "device": report}, indent=2))
+            manifest.write_text(json.dumps({**base, "status": "writing", "bytes_written": written}, indent=2))
     finally:
         usage = shutil.disk_usage(target)
         achieved = usage.used / usage.total
-        result = {"status": "prepared" if achieved >= occupancy - 1e-6 else "incomplete",
+        result = {**base, "status": "prepared" if achieved >= occupancy - 1e-6 else "incomplete",
                   "bytes_written": written, "occupancy": achieved, "target_occupancy": occupancy,
-                  "device": report, "elapsed_seconds": time.monotonic() - started,
-                  "method": "random buffered writes, fsync every 64 MiB"}
+                  "elapsed_seconds": time.monotonic() - started}
         manifest.write_text(json.dumps(result, indent=2))
     return result
