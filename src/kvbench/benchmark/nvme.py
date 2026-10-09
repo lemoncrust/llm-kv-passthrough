@@ -164,7 +164,8 @@ def _tag(value: str) -> str:
     return value.replace("\\", "\\\\").replace(" ", "\\ ").replace(",", "\\,").replace("=", "\\=")
 
 
-def influx_line(fields: dict[str, Any], tags: dict[str, str], timestamp_ns: int) -> str:
+def influx_line(fields: dict[str, Any], tags: dict[str, str], timestamp_ns: int, *,
+                measurement: str = "kvbench_nvme", include_strings: bool = False) -> str:
     # Raw JSON retains exact 128-bit integers. Numeric dashboard fields use
     # floats; all deltas/ratios are computed BEFORE conversion to float.
     metrics = []
@@ -173,8 +174,11 @@ def influx_line(fields: dict[str, Any], tags: dict[str, str], timestamp_ns: int)
             metrics.append(f"{key}={'true' if value else 'false'}")
         elif isinstance(value, (int, float)) and math.isfinite(value):
             metrics.append(f"{key}={float(value)}")
+        elif include_strings and isinstance(value, str):
+            escaped = value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n").replace("\r", "\\r")
+            metrics.append(f'{key}="{escaped}"')
     labels = ",".join(f"{_tag(k)}={_tag(v)}" for k, v in sorted(tags.items()))
-    return f"kvbench_nvme,{labels} {','.join(metrics)} {timestamp_ns}\n"
+    return f"{_tag(measurement)},{labels} {','.join(metrics)} {timestamp_ns}\n"
 
 
 def write_latest(path: Path, text: str) -> None:
