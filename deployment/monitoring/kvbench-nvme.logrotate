@@ -1,0 +1,10 @@
+/var/lib/kvbench-nvme/samples.jsonl {
+    daily
+    rotate 7
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 0644 wvaske wvaske
+    su wvaske wvaske
+}
