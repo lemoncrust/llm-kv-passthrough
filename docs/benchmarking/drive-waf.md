@@ -10,7 +10,8 @@ Three distinct layers are retained:
 1. **KV/file operations:** page/chunk bytes, files, API latency, writer threads,
    overlap and eviction traces. These are not device LBAs.
 2. **Block issue order:** bounded `blktrace` captures, parsed into request sizes,
-   adjacent-write transitions and maximum contiguous-LBA runs. This is device
+   adjacent-write transitions, maximum contiguous-LBA runs, unique written-LBA
+   coverage and revisited-write bytes/fraction. This is device
    issue order, not NAND placement or reconstructed per-file streams.
 3. **Device counters:** standard SMART host bytes and OCP NAND bytes, sampled
    independently every five seconds and saved with raw logs and timestamps.
@@ -59,6 +60,39 @@ The example requires:
   already skips compute sleeps: throughput comes from actual generation/I/O,
   not from multiplying the configured rates. Both arms use `payload_generator:
   sfc64`, with 256 KiB bounded scratch and fresh high-entropy bytes.
+
+### Pattern-focused 10× offered workload
+
+The campaign now sets `workload_multiplier: 10` on top of `concurrency: 16`:
+**160 independent producer streams** feed the same selected rank and cache.
+Admission limits scale to 320 active / 640 pending slots, and the HTTP connection
+pool scales to 160 so its usual 100-connection limit cannot silently cap the load.
+Existing streams retain their deterministic request sequences. Per-request
+prompt/output sizes, prefill batches, chunk/page bytes, cache quotas, payload
+entropy, ranks and backend policies do not scale with this multiplier.
+
+Additional streams intentionally change contention and interleaving. This is
+**offered-load scaling**, not exact time-compressed replay or a promise of 10×
+physical write bandwidth. Full-speed mode already removes compute waits; real
+manager admission, backpressure, eviction and storage determine actual I/O.
+The requested multiplier and effective stream count are recorded in experiment,
+per-arm manifest and phase-summary artifacts. Admission overflow fails before
+preparation instead of silently clamping the multiplier.
+
+The pattern comparisons emphasize:
+
+- File/page size distribution and per-request storage order.
+- Concurrent writer streams, file creation and native cache eviction.
+- Contiguous issued-LBA runs and address revisits under cache churn.
+- Device NAND/host WAF over observed drive fills.
+
+`revisited_write_bytes` is sampled issued-write bytes minus the union of sampled
+written LBA ranges, with partial overlap counted exactly. It includes filesystem
+metadata and device reissues, and only detects repeats **within that sample**.
+It is not a NAND-write counter or evidence that an application overwrote the same
+file. Native cache churn may unlink/create immutable page objects and let the
+filesystem reuse their LBAs. A disk-backed ordered interval set beside the trace
+keeps coverage analysis bounded in RAM; original traces remain available.
 
 The large quota gives buffered data time to reach writeback before eviction;
 tiny fast-turnover caches can unlink dirty files before the device sees them.
