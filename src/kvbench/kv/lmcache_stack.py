@@ -156,6 +156,7 @@ class LMCacheStack(KVStack):
             self._trace_recorder = TraceRecorder(self.trace_file)
             self._trace_recorder.record(
                 event="meta", op="rank_selection", backend="LMCacheStack",
+                payload_axis_order="KV,L,T,D", memory_format="KV_2LTD",
                 **rank_selection_info(self.layout, self.active_rank_ids),
             )
         dtype = {"bf16": torch.bfloat16, "fp16": torch.float16, "fp8": torch.float8_e4m3fn,
@@ -309,6 +310,7 @@ class LMCacheStack(KVStack):
         selection = rank_selection_info(self.layout, self.active_rank_ids)
         return {**selection, "chunk_size": self.chunk_size, "bytes_per_token": self.model.total_kv_cache_bytes_per_token,
                 "cache_transport_dtype": self.model.effective_kv_dtype,
+                "payload_axis_order": "KV,L,T,D", "memory_format": "KV_2LTD",
                 "cache_scope": "growing KV payload only; window/fixed state is not offloaded",
                 "cache_token_alignment": self.model.cache_token_alignment,
                 "chunk_bytes": stored * self.chunk_size, "stored_bytes_per_token": stored,
@@ -348,6 +350,18 @@ class LMCacheStack(KVStack):
     @property
     def trace_recorder(self) -> TraceRecorder | None:
         return self._trace_recorder
+
+    async def flush(self) -> None:
+        async with self._lock:
+            self._require_engine()
+            async with asyncio.timeout(120):
+                while any(backend.disk_worker.put_tasks
+                          for engine in self._engines
+                          for backend in engine.storage_manager.storage_backends.values()
+                          if hasattr(backend, "disk_worker")):
+                    await asyncio.sleep(0.01)
+            if self._trace_recorder:
+                self._trace_recorder.flush()
 
     async def close(self) -> None:
         self._closing = True

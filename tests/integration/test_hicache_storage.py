@@ -89,6 +89,7 @@ async def test_native_lru_enforces_disk_quota_and_restart_discovers_files(tmp_pa
     await stack.start()
     await stack.store(list(range(16)))
     await stack.close()
+    assert len([e for e in load_events(tmp_path / "trace.jsonl") if e["op"] == "remove"]) == 5
     assert len(list((tmp_path / "disk").glob("*.bin"))) == 3
     restarted = create_kv_stack(cfg)
     await restarted.start()

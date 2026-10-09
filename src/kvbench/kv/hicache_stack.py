@@ -149,11 +149,29 @@ class HiCacheStack(KVStack):
             self.trace_recorder = TraceRecorder(self.config.kv.trace_file)
             self.trace_recorder.record(event="meta", op="rank_selection", backend="HiCacheFile", **self.selection)
             self.trace_recorder.record(event="meta", op="backend_info", backend="HiCacheFile", **self.provenance())
+            for index, backend in enumerate(self._backends):
+                self._trace_eviction(index, backend)
+
+    def _trace_eviction(self, index: int, backend: Any) -> None:
+        original = backend._evictor._evict_one_lru_locked
+
+        def evict() -> Any:
+            key = next(iter(backend._evictor._lru), None)
+            started = time.perf_counter()
+            outcome, freed = original()
+            if outcome == "evicted" and self.trace_recorder:
+                self.trace_recorder.record(event="logical", op="remove", backend="HiCacheFile",
+                                           key=key, size=freed, rank=self.active_layout[index]["rank"],
+                                           dur_ms=(time.perf_counter() - started) * 1000, hit=True)
+            return outcome, freed
+
+        backend._evictor._evict_one_lru_locked = evict
 
     def provenance(self) -> dict[str, Any]:
         return {"sglang_version": VERSION, "sglang_revision": REVISION, "source_hashes": SOURCE_HASHES,
                 "adapter_scope": "real HiCacheFile L3; V1 modeled host tier, not HiRadixTree",
                 "config": self.options.model_dump(mode="json"), "namespace": self.namespace,
+                "payload_axis_order": "KV,T,L,D" if self.options.mem_layout == "page_first" else "KV,L,T,D",
                 "file_format": "raw page, temporary file + rename", "use_odirect": False,
                 "fsync_per_page": False}
 
@@ -172,6 +190,9 @@ class HiCacheStack(KVStack):
         # actual page granularity instead of misreporting a batch as one write.
         for key, value in zip(keys, values, strict=True):
             exists = backend.exists(key)
+            if self.trace_recorder:
+                self.trace_recorder.record(event="logical", op="put", backend="HiCacheFile", key=key,
+                                           size=value.numel() * value.element_size(), rank=self.active_layout[index]["rank"])
             started = time.perf_counter()
             if not backend.set(key, value):
                 raise OSError("HiCacheFile refused/failed a page write; inspect quota and free space")
@@ -191,8 +212,8 @@ class HiCacheStack(KVStack):
 
         rank = self.active_layout[index]
         # Native MHA page_first is [K/V, token, layer, head, dim]; direct/layer
-        # first flatten [K/V, layer, token, head, dim]. LMCache is layer-major
-        # before K/V. All encode equal byte counts with different axis order.
+        # first flatten [K/V, layer, token, head, dim], matching classic LMCache
+        # KV_2LTD. Page-first changes axis order, not page bytes or file size.
         shape = (2, rank["layers"], self.options.page_size, rank["width"])
         if self.options.mem_layout == "page_first":
             shape = (2, self.options.page_size, rank["layers"], rank["width"])
@@ -296,6 +317,10 @@ class HiCacheStack(KVStack):
                 target = torch.empty(size, dtype=torch.uint8, device="cpu")
                 started = time.perf_counter()
                 value = backend.get(key, target)
+                if self.trace_recorder:
+                    self.trace_recorder.record(event="logical", op="get", backend="HiCacheFile", key=key,
+                                               size=size if value is not None else 0, hit=value is not None,
+                                               rank=self.active_layout[index]["rank"])
                 if value is None:
                     return page * self.chunk_size
                 self._trace("read", index, key, size, started)

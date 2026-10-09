@@ -36,7 +36,9 @@ rejected explicitly rather than represented as native-compatible layouts.
 Supported memory layouts are `page_first`, `page_first_direct` and `layer_first`.
 MHA page-first bytes have axis order `[K/V, token, layer, head, dim]`; direct and
 layer-first pages flatten `[K/V, layer, token, head, dim]`. Classic LMCache's
-transport is layer-major before K/V. Payloads are deterministic high-entropy
+`KV_2LTD` connector has the **same flattened axis order as page-first-direct**;
+do not confuse its metadata shape with its actual connector tensor shape.
+Payloads are deterministic high-entropy
 synthetic bytes, not floating-point inference outputs.
 
 The modeled host `write_through` policy submits each completed page immediately;

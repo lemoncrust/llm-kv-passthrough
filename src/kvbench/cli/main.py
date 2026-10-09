@@ -247,9 +247,10 @@ def serve(
     console.print(f"  Instance ID: {cfg.instance_id}")
     console.print(f"  Server Type: {cfg.server.server_type}")
     console.print(f"  KV Stack: {cfg.kv.stack}")
-    console.print(
-        f"  LMCache Config: {cfg.kv.lmcache_config_file or 'LMCACHE_* env / defaults'}"
-    )
+    if cfg.kv.stack == "hicache":
+        console.print(f"  HiCache storage: {cfg.kv.hicache.storage_path} ({cfg.kv.hicache.write_policy}, modeled host tier)")
+    else:
+        console.print(f"  LMCache Config: {cfg.kv.lmcache_config_file or 'LMCACHE_* env / defaults'}")
     console.print(f"  Model: {cfg.server.model_profile}")
     console.print(f"  Hardware label: {cfg.gpu.gpu_profile} (rates are authoritative)")
     if cfg.timing.full_speed:
@@ -257,7 +258,8 @@ def serve(
     console.print(f"  KV ranks: TP={cfg.gpu.tp_size}, PP={cfg.timing.pp_size}")
     modeled_ranks = cfg.gpu.tp_size * cfg.timing.pp_size
     active_ranks = resolve_active_ranks(modeled_ranks, cfg.kv.active_ranks)
-    console.print(f"  Active LMCache ranks: {active_ranks} ({len(active_ranks)}/{modeled_ranks} modeled)")
+    manager = "HiCache" if cfg.kv.stack == "hicache" else "LMCache"
+    console.print(f"  Active {manager} ranks: {active_ranks} ({len(active_ranks)}/{modeled_ranks} modeled)")
 
     # Persist the fully-resolved config and point the app factory at it.
     # This survives uvicorn worker processes and --reload subprocesses,

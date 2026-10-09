@@ -166,6 +166,14 @@ class KVBenchApp:
                     "kv_stats": {**asdict(kv.stats), "token_hit_rate": kv.stats.token_hit_rate},
                     "scheduler": server.scheduler.info()}
 
+        @self.app.post("/kvbench/flush")
+        async def flush() -> dict[str, bool]:
+            server = self._require_server()
+            if server.scheduler.active or server.scheduler.pending or self._require_warmup().running:
+                raise HTTPException(409, "Stop serving and warmup before draining storage")
+            await self._require_kv().flush()
+            return {"drained": True, "fsync": False}
+
         @self.app.get("/v1/models")
         async def models() -> ModelList:
             return await self._require_server().list_models()

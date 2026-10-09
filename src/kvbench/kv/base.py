@@ -128,6 +128,10 @@ class KVStack(abc.ABC):
     def usage_info(self) -> dict[str, dict[str, Any]]:
         return {}
 
+    async def flush(self) -> None:
+        """Drain owned pending writes; filesystem/device durability is separate."""
+        return None
+
     async def __aenter__(self) -> KVStack:
         await self.start()
         return self
