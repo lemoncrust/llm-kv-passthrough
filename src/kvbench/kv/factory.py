@@ -47,6 +47,11 @@ def create_kv_stack(config: KVBenchConfig) -> KVStack:
     """
     stack = config.kv.stack
 
+    if stack == "hicache":
+        from kvbench.kv.hicache_stack import HiCacheStack
+
+        return HiCacheStack(config)
+
     if stack == "lmcache":
         return LMCacheStack(
             model_profile=config.server.model_profile,
@@ -66,4 +71,4 @@ def create_kv_stack(config: KVBenchConfig) -> KVStack:
     if stack == "kvbm":
         raise ValueError(_KVBM_UNAVAILABLE)
 
-    raise ValueError(f"Unknown KV stack: {stack!r}. Supported: lmcache")
+    raise ValueError(f"Unknown KV stack: {stack!r}. Supported: lmcache, hicache")

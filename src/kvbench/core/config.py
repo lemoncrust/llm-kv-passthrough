@@ -24,6 +24,20 @@ class ConfigModel(BaseModel):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
 
+class HiCacheConfig(ConfigModel):
+    """SGLang HiCacheFile L3 and the V1 modeled host-tier policy (GiB/rank)."""
+
+    storage_path: Path | None = None
+    page_size: int = Field(default=256, ge=1, le=65536)
+    host_size_gb: float = Field(default=0.25, gt=0)
+    disk_size_gb: float = Field(default=0.5, gt=0)
+    min_free_bytes: int = Field(default=64 * 1024**2, ge=0)
+    eviction_ratio: float = Field(default=0.9, gt=0, le=1)
+    mem_layout: Literal["page_first", "page_first_direct", "layer_first"] = "page_first_direct"
+    write_policy: Literal["write_through", "write_back"] = "write_through"
+    write_batch_pages: int = Field(default=32, ge=1, le=128)
+
+
 class KVStackConfig(ConfigModel):
     """KV management stack configuration.
 
@@ -41,10 +55,11 @@ class KVStackConfig(ConfigModel):
             LMCache is configured from its LMCACHE_* environment variables.
     """
 
-    stack: Literal["lmcache", "kvbm"] = Field(
+    stack: Literal["lmcache", "hicache", "kvbm"] = Field(
         default="lmcache",
         description="KV management stack",
     )
+    hicache: HiCacheConfig = Field(default_factory=HiCacheConfig)
     lmcache_config_file: Path | None = Field(
         default=None,
         description="Path to LMCache's own config file (LMCACHE_* env vars are used when unset)",
@@ -87,6 +102,13 @@ class KVStackConfig(ConfigModel):
         """Fail loudly on a nonexistent LMCache config file."""
         if self.lmcache_config_file is not None and not self.lmcache_config_file.exists():
             raise ValueError(f"LMCache config file not found: {self.lmcache_config_file}")
+        if self.stack == "hicache":
+            if self.hicache.storage_path is None:
+                raise ValueError("HiCache requires kv.hicache.storage_path")
+            if self.lmcache_config_file is not None:
+                raise ValueError("HiCache cannot use lmcache_config_file")
+        elif self.hicache != HiCacheConfig():
+            raise ValueError("kv.hicache options require kv.stack: hicache")
         return self
 
 
@@ -527,7 +549,8 @@ class KVBenchConfig(ConfigModel):
         # Paths belong to the configuration file, not the caller's cwd.
         if isinstance(data, dict):
             for mapping, key in ((data, "profiles_file"), (data.get("kv", {}), "lmcache_config_file"),
-                                 (data.get("kv", {}), "trace_file"), (data.get("timing", {}), "anchors_file")):
+                                 (data.get("kv", {}), "trace_file"), (data.get("timing", {}), "anchors_file"),
+                                 (data.get("kv", {}).get("hicache", {}), "storage_path")):
                 if isinstance(mapping, dict) and mapping.get(key):
                     value = Path(mapping[key])
                     mapping[key] = str((path.parent / value).resolve()) if not value.is_absolute() else str(value)

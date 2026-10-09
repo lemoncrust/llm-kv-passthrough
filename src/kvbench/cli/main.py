@@ -36,6 +36,8 @@ def serve(
     model: str | None = typer.Option(None, "--model", "-m", help="Model profile to emulate"),
     gpu: str | None = typer.Option(None, "--gpu", "-g", help="Hardware profile label (V1 rates are configured separately)"),
     profiles: str | None = typer.Option(None, "--profiles", help="YAML GPU/model catalog overrides"),
+    kv_stack: str | None = typer.Option(None, "--kv-stack", help="KV adapter: lmcache or hicache (SGLang HiCacheFile)"),
+    hicache_path: str | None = typer.Option(None, "--hicache-path", help="HiCache file storage directory"),
     prefill_tps: float | None = typer.Option(None, "--prefill-tps", help="Aggregate prefill tokens/s for this engine"),
     decode_tps: float | None = typer.Option(None, "--decode-tps", help="Aggregate decode tokens/s for this engine"),
     max_active: int | None = typer.Option(None, "--max-active", help="Maximum active requests"),
@@ -217,12 +219,15 @@ def serve(
     kv_updates: dict[str, Any] = {
         key: value
         for key, value in {
+            "stack": kv_stack,
             "lmcache_config_file": lmcache_config,
             "trace_file": trace_file,
             "random_fill": random_fill,
         }.items()
         if value is not None
     }
+    if hicache_path is not None:
+        kv_updates["hicache"] = cfg.kv.hicache.model_copy(update={"storage_path": hicache_path})
     if kv_ranks is not None:
         try:
             # 'all' deliberately writes None, overriding a subset from the file.
@@ -267,7 +272,7 @@ def serve(
 
     data = cfg.model_dump(mode="json")
     for mapping, key in ((data, "profiles_file"), (data["kv"], "lmcache_config_file"),
-                         (data["kv"], "trace_file")):
+                         (data["kv"], "trace_file"), (data["kv"]["hicache"], "storage_path")):
         if mapping.get(key):
             mapping[key] = str(Path(mapping[key]).resolve())
     cfg = KVBenchConfig.model_validate(data)

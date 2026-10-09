@@ -151,6 +151,9 @@ class KVBenchApp:
                 # Some LMCache defaults are infinite thresholds. Preserve them
                 # as explicit strings rather than emitting invalid JSON floats.
                 result["lmcache"] = json.loads(json.dumps(cfg.to_dict(), default=str), parse_constant=str)
+            provenance = getattr(self._kv, "provenance", None)
+            if provenance is not None:
+                result["hicache"] = provenance()
             return result
 
         @self.app.get("/kvbench/state")
