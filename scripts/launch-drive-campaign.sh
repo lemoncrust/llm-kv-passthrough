@@ -19,10 +19,11 @@ sudo -n systemd-run --unit="$unit" --uid="$(id -un)" \
     --setenv=PYTHONDONTWRITEBYTECODE=1 --setenv=OMP_NUM_THREADS=1 \
     --setenv=OPENBLAS_NUM_THREADS=1 \
     --property=MemoryHigh=3G --property=MemoryMax=4G --property=MemorySwapMax=0 \
-    --property=CPUQuota=200% --property=Nice=10 --property=IOWeight=10 \
-    --property='IOWriteBandwidthMax=/dev/nvme6n1 512M' \
-    --property='IOReadBandwidthMax=/dev/nvme6n1 512M' \
+    --property=CPUQuota=800% --property=Nice=10 --property=IOWeight=10 \
+    --property='IOWriteBandwidthMax=/dev/nvme6n1 3G' \
+    --property='IOReadBandwidthMax=/dev/nvme6n1 3G' \
     --property=TimeoutStopSec=90 \
     "$root/.venv/bin/python" -m kvbench.benchmark.drive campaign \
-    --config "$snapshot/examples/drive-compare.yaml" --rate-mib 128
+    --config "$snapshot/examples/drive-compare.yaml" --rate-mib 2048 \
+    --filler-generator sfc64 --fsync-mib 256
 printf 'Unit: %s\nSource: %s\nArtifacts: %s\n' "$unit" "$snapshot" "$artifacts"

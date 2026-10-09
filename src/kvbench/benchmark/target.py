@@ -91,13 +91,14 @@ def qualify_target(target: Path, probe: NVMeProbe, expected_serial: str,
 
 
 def fill_target(target: Path, probe: NVMeProbe, expected_serial: str, *, occupancy: float = 0.85,
-                 rate_mib: float = 128, max_bytes: int | None = None,
+                rate_mib: float = 128, max_bytes: int | None = None,
                 stop: threading.Event | None = None,
                 generator: Literal["system", "sfc64"] = "system",
                 fsync_bytes: int = 64 * 1024**2) -> dict[str, Any]:
     """Create a NEW dedicated filler directory; never truncate existing files.
 
-    Writes real random payload, fsyncs each 64 MiB, and preserves the files. A
+    Writes real random payload, fsyncs at the configured interval (64 MiB by
+    default), and preserves the files. A
     max_bytes bound may intentionally leave preparation incomplete. No format,
     trim, discard, sparse allocation or deletion is performed.
     """

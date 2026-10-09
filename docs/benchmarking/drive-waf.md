@@ -53,6 +53,12 @@ The example requires:
 - Separate process per arm, one active rank of TP=8, 0.25 GiB host cache and
   64 GiB disk quota. Server virtual memory is capped at 4 GiB. Full-speed compute
   mode is intentional; actual payload generation and storage remain real work.
+- The accelerated profile labels the system as 8×B300, with illustrative aggregate
+  rates of 200,000 prefill / 20,000 decode tokens/s, 32 active slots, 16 clients,
+  8,192-token prefill slices and 512 output tokens per request. Full-speed mode
+  already skips compute sleeps: throughput comes from actual generation/I/O,
+  not from multiplying the configured rates. Both arms use `payload_generator:
+  sfc64`, with 256 KiB bounded scratch and fresh high-entropy bytes.
 
 The large quota gives buffered data time to reach writeback before eviction;
 tiny fast-turnover caches can unlink dirty files before the device sees them.
@@ -101,7 +107,8 @@ python -m kvbench.benchmark.drive fill --target /mnt/work/kvbench/waf-filler \
 python -m kvbench.benchmark.drive compare --config examples/drive-compare.yaml
 
 # Or unattended preparation + comparison, with durable preparation telemetry:
-python -m kvbench.benchmark.drive campaign --config examples/drive-compare.yaml --rate-mib 128
+python -m kvbench.benchmark.drive campaign --config examples/drive-compare.yaml \
+  --rate-mib 2048 --filler-generator sfc64 --fsync-mib 256
 
 # Small functional check only, ALWAYS qualified:false. Request count is bounded.
 python -m kvbench.benchmark.drive compare --config examples/drive-compare.yaml --mode smoke
@@ -110,20 +117,34 @@ python -m kvbench.benchmark.drive compare --config examples/drive-compare.yaml -
 The lab launcher `bash scripts/launch-drive-campaign.sh` requires a clean commit,
 freezes source/configs in a detached worktree, and starts the full campaign under
 systemd as the invoking user. Its whole process group has a 3 GiB memory-high
-threshold, 4 GiB hard memory limit, no swap, two CPU-equivalents, low I/O priority,
-and a 512 MB/s read/write cap on the test namespace. Filler is additionally paced
-at 128 MiB/s. These controls also affect page-cache writeback and must be retained
+threshold, 4 GiB hard memory limit, no swap, eight CPU-equivalents, low I/O priority,
+and a 3 GB/s read/write cap on the test namespace. Filler has a 2,048 MiB/s rate
+ceiling and uses SFC64 rather than a cryptographic system RNG, fsyncing each
+256 MiB. These are ceilings, not guaranteed throughput. These controls also
+affect page-cache writeback and must be retained
 for both arms when comparing results. The source revision is recorded.
 
 The unit is `kvbench-waf-<eight-character-commit>.service`; inspect with
 `systemctl status` / `journalctl -u`, and stop it with `sudo systemctl stop`.
 It does not auto-restart an interrupted experiment or delete incomplete artifacts.
 
-Filler uses 8 MiB buffers, fsyncs every 64 MiB, creates files no larger than
+Filler uses an 8 MiB buffer (plus at most 256 KiB scratch for SFC64), defaults to
+fsync every 64 MiB unless overridden, and creates files no larger than
 8 GiB, and stops at a 5% free-space floor. It preserves existing data and the
 new filler. The campaign samples during preparation, then fails if preparation
 or telemetry is incomplete. Do not restart an interrupted fill over its old
 directory; its manifest records partial progress and existing data remains.
+
+Existing filler contributes to filesystem occupancy after a campaign restart.
+The new campaign creates a fresh owned directory and only supplies the remaining
+space; it does not erase or rewrite the previous preparation files.
+
+On dev, the bounded 4 MiB-page CPU microbenchmark measured about 81 MiB/s with
+the legacy Torch-byte RNG and 2,041 MiB/s with SFC64 (about 25×). Reproduce with
+`scripts/benchmark-payloads.py` under its documented process/thread limits.
+This measures only payload generation; real device throughput is measured
+separately by the NVMe collector. Page size, dtype, selected ranks and byte
+geometry are unchanged, and fast payloads use a separate cache namespace.
 
 ## Artifacts and Grafana
 

@@ -86,6 +86,9 @@ def test_comparison_signature_detects_byte_and_rate_mismatches():
                 "local_cpu_capacity_bytes": 1024, "local_disk_capacity_bytes": 2048}
     first = comparison_signature(cfg, capacity)
     assert comparison_signature(cfg, {**capacity, "chunk_size": 128}) != first
+    cfg.kv.payload_generator = "sfc64"
+    assert comparison_signature(cfg, capacity) != first
+    cfg.kv.payload_generator = "torch"
     cfg.scheduler.decode_tokens_per_second *= 2
     assert comparison_signature(cfg, capacity) != first
 

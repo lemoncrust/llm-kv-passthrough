@@ -18,8 +18,8 @@ interval_seconds: 5
 block_trace_seconds: 60
 idle_seconds: 60
 drain_seconds: 300
-concurrency: 8
+concurrency: 16
 prompt_chars: 65536
-output_tokens: 128
+output_tokens: 512
 process_memory_bytes: 4294967296
 influx_file: /var/lib/kvbench-nvme/experiment.influx
