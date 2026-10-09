@@ -1,5 +1,8 @@
 # Single-NVMe cache-layout and write-amplification comparison
 
+The [active campaign launch record](active-campaign.md) identifies the supervised
+run, frozen code revision, artifact locations and stop command.
+
 ## What is measured
 
 Three distinct layers are retained:

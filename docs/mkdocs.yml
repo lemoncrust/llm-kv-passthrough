@@ -53,6 +53,7 @@ nav:
     - GenAI-Perf: benchmarking/genai-perf.md
     - LMCache Integration: benchmarking/lmcache.md
     - Single-Drive WAF: benchmarking/drive-waf.md
+    - Active NVMe Campaign: benchmarking/active-campaign.md
   - V1 Plan: V1_PLAN.md
 
 plugins:
