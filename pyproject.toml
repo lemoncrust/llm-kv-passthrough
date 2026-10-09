@@ -84,6 +84,10 @@ packages = ["src/kvbench"]
 include = [
     "/src",
     "/tests",
+    "/examples",
+    "/docs",
+    "/scripts",
+    "/deployment/monitoring",
     "/README.md",
     "/LICENSE",
     "/pyproject.toml",

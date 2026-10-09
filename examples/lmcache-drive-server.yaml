@@ -1,0 +1,12 @@
+server:
+  model_profile: llama-3.1-8b
+gpu:
+  tp_size: 8
+timing:
+  full_speed: true
+scheduler:
+  prefill_chunk_tokens: 4096
+kv:
+  active_ranks: [0]
+  lmcache_config_file: lmcache-drive-endurance.yaml
+  max_cpu_memory_gb: 2

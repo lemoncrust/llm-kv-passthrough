@@ -52,7 +52,7 @@ appear in `/kvbench/manifest` with rates, ranks and package versions.
 
 | Field under `kv` | Default | Meaning |
 |---|---|---|
-| `stack` | `lmcache` | Only implemented production manager |
+| `stack` | `lmcache` | `lmcache` or `hicache` (SGLang HiCacheFile adapter) |
 | `lmcache_config_file` | unset | LMCache YAML; otherwise `LMCACHE_*` environment |
 | `active_ranks` | `null` (all) | Global TP/PP rank IDs to instantiate, e.g. `[0]` or `[0, 7]` |
 | `trace_file` | unset | JSONL trace; use a unique path for each process/run |
@@ -65,6 +65,12 @@ LMCache sizes are **per active rank**. The guard checks their sum before creatin
 any engine. With no explicit CPU sizing, the adapter uses 0.25 GiB per active rank. It keeps
 process-wide cyclic GC enabled. It does not allocate model weights or simulated
 HBM, and it does not change LMCache chunk size or explicit tier sizes.
+
+For HiCache, use `kv.stack: hicache` with `kv.hicache.storage_path`, `page_size`,
+`host_size_gb`, `disk_size_gb`, `mem_layout` and `write_policy`. Its quota fields
+are also GiB per active rank. See the [HiCache contract](../architecture/hicache.md)
+for installation and the distinction between native L3 storage and V1 host policy.
+Do not pass an LMCache config file to a HiCache run.
 
 ### Selected-rank execution
 

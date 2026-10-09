@@ -170,3 +170,19 @@ def test_unsupported_hybrid_layout_is_explicit(tmp_path):
     data["server"]["model_profile"] = "kimi-k3"
     with pytest.raises(ValueError, match="MHA/GQA"):
         create_kv_stack(KVBenchConfig.model_validate(data))
+
+
+async def test_pp_uses_native_tp_pp_suffix_and_global_trace_rank(tmp_path):
+    data = config(tmp_path).model_dump(mode="json")
+    data["gpu"]["tp_size"] = 2
+    data["timing"]["pp_size"] = 4
+    stack = create_kv_stack(KVBenchConfig.model_validate(data))
+    await stack.start()
+    try:
+        await stack.store([1, 2])
+        files = list((tmp_path / "disk").glob("*.bin"))
+        assert len(files) == 1 and files[0].name.endswith("_1_2_4_3.bin")
+        stack.trace_recorder.flush()
+        assert {e["rank"] for e in load_events(tmp_path / "trace.jsonl") if e["event"] == "io"} == {7}
+    finally:
+        await stack.close()

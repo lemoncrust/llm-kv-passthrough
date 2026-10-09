@@ -1,7 +1,8 @@
 # Storage ownership and measurements
 
-All KV payload I/O goes through **real LMCache**. KV-Bench has no independent
-storage backend implementations. LMCache configuration controls chunk size,
+KV payload I/O goes through **real LMCache** or **SGLang's HiCacheFile backend**.
+The [HiCache adapter](hicache.md) uses a modeled host tier over native L3 file
+operations; the sections below describe LMCache unless noted. LMCache configuration controls chunk size,
 CPU/local-disk capacities and optional remote backends.
 
 Each active logical TP/PP rank owns a CPU pool and backend instance. Configured tier

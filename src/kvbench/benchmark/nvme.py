@@ -225,7 +225,7 @@ def main() -> None:
     parser.add_argument("--expected-serial", help="Fail rather than follow a renumbered controller to another drive")
     parser.add_argument("--sudo", action="store_true")
     parser.add_argument("--output", type=Path, required=True, help="Append raw samples and derived deltas as JSONL")
-    parser.add_argument("--influx-file", type=Path, help="Atomic latest sample for Telegraf inputs.file")
+    parser.add_argument("--influx-file", type=Path, help="Atomic latest sample plus a .stream companion for Telegraf inputs.tail")
     parser.add_argument("--interval", type=float, default=5)
     parser.add_argument("--samples", type=int, default=0, help="0 means until interrupted")
     parser.add_argument("--run-id", default=None)

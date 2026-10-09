@@ -1,7 +1,9 @@
 # KV manager adapter
 
-The production adapter is `LMCacheStack` in `src/kvbench/kv/`. It drives the real
-LMCache 0.5.4 classic engine API. `KVStack` is the boundary for future managers.
+`LMCacheStack` in `src/kvbench/kv/` drives the real LMCache 0.5.4 classic engine
+API. `HiCacheStack` drives pinned SGLang 0.5.21 HiCacheFile L3 storage with a
+modeled V1 host tier; see its [integration contract](hicache.md).
+`KVStack` is the shared boundary for managers.
 
 Servers operate on token sequences using lookup/pin, retrieve, store and unpin.
 The adapter validates rank geometry, checks CPU-pool/chunk allocation guards,
