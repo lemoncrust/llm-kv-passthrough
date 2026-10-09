@@ -7,6 +7,7 @@ from kvbench.benchmark.nvme import (
     OCP_GUID,
     Collector,
     CounterTracker,
+    NVMeProbe,
     Sample,
     decode_counters,
     influx_line,
@@ -93,3 +94,10 @@ def test_influx_escaping_and_unknown_waf_not_emitted():
     assert line == 'kvbench_nvme,model=hello\\,\\ world\\=1 host_bytes_delta=3.0,sample_valid=true 123\n'
     with pytest.raises(ValueError, match="Newline"):
         influx_line({}, {"run_id": "a\nb"}, 1)
+
+
+def test_probe_does_not_follow_controller_renumbering(monkeypatch):
+    probe = NVMeProbe("/dev/nvme6", expected_serial="expected")
+    monkeypatch.setattr(probe, "command", lambda *_args: {"sn": "different"})
+    with pytest.raises(ValueError, match="serial changed"):
+        probe.sample()

@@ -80,10 +80,11 @@ class Sample:
 
 
 class NVMeProbe:
-    def __init__(self, device: str, mount: Path | None = None, sudo: bool = False):
+    def __init__(self, device: str, mount: Path | None = None, sudo: bool = False, expected_serial: str | None = None):
         if not re.fullmatch(r"/dev/nvme[0-9]+", device):
             raise ValueError("Use an NVMe controller, e.g. /dev/nvme6; all counters are controller-wide")
         self.device, self.mount, self.sudo = device, mount, sudo
+        self.expected_serial = expected_serial
 
     def command(self, *args: str) -> dict[str, Any]:
         prefix = ["sudo", "-n"] if self.sudo else []
@@ -91,6 +92,8 @@ class NVMeProbe:
 
     def sample(self) -> Sample:
         identity = self.command("id-ctrl")
+        if self.expected_serial is not None and identity["sn"].strip() != self.expected_serial:
+            raise ValueError("NVMe controller serial changed or differs from expected_serial")
         smart = self.command("smart-log")
         ocp = self.command("ocp", "smart-add-log")
         host, nand = decode_counters(smart, ocp)
@@ -219,6 +222,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--device", required=True)
     parser.add_argument("--mount", type=Path)
+    parser.add_argument("--expected-serial", help="Fail rather than follow a renumbered controller to another drive")
     parser.add_argument("--sudo", action="store_true")
     parser.add_argument("--output", type=Path, required=True, help="Append raw samples and derived deltas as JSONL")
     parser.add_argument("--influx-file", type=Path, help="Atomic latest sample for Telegraf inputs.file")
@@ -228,7 +232,7 @@ def main() -> None:
     args = parser.parse_args()
     if not math.isfinite(args.interval) or args.interval < 1 or args.samples < 0:
         parser.error("interval must be >=1 second and samples >=0")
-    collector = Collector(NVMeProbe(args.device, args.mount, args.sudo), args.output, args.interval,
+    collector = Collector(NVMeProbe(args.device, args.mount, args.sudo, args.expected_serial), args.output, args.interval,
                           run_id=args.run_id or f"monitor-{time.time_ns()}", influx_file=args.influx_file)
     count = 0
     try:
