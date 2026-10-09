@@ -61,23 +61,23 @@ The example requires:
   not from multiplying the configured rates. Both arms use `payload_generator:
   sfc64`, with 256 KiB bounded scratch and fresh high-entropy bytes.
 
-### Pattern-focused 10× offered workload
+### Pattern-focused full-speed workload
 
-The campaign now sets `workload_multiplier: 10` on top of `concurrency: 16`:
-**160 independent producer streams** feed the same selected rank and cache.
-Admission limits scale to 320 active / 640 pending slots, and the HTTP connection
-pool scales to 160 so its usual 100-connection limit cannot silently cap the load.
-Existing streams retain their deterministic request sequences. Per-request
-prompt/output sizes, prefill batches, chunk/page bytes, cache quotas, payload
-entropy, ranks and backend policies do not scale with this multiplier.
+Both cache arms use **`timing.full_speed: true` with 16 producer streams**.
+The scheduler skips emulated GPU compute sleeps and feeds the real KV manager
+as fast as the host and storage path allow. Configured GPU token rates impose
+no pacing in this mode. Admission stays at 32 active / 64 pending slots.
 
-Additional streams intentionally change contention and interleaving. This is
-**offered-load scaling**, not exact time-compressed replay or a promise of 10×
-physical write bandwidth. Full-speed mode already removes compute waits; real
+Acceleration does not multiply concurrent streams, per-request prompt/output
+sizes, prefill batches, chunk/page bytes, cache quotas or payload bytes. Real
 manager admission, backpressure, eviction and storage determine actual I/O.
-The requested multiplier and effective stream count are recorded in experiment,
-per-arm manifest and phase-summary artifacts. Admission overflow fails before
-preparation instead of silently clamping the multiplier.
+There is no synthetic bandwidth or counter multiplier. The objective is the
+resulting write/eviction/address-reuse pattern, not matching GPU throughput.
+
+The proposed 10× stream multiplier was removed before deployment: increasing
+stream count would alter the concurrency pattern. The running frozen campaign
+already uses full-speed mode with 16 streams, so this correction requires no
+interruption of preparation.
 
 The pattern comparisons emphasize:
 
@@ -93,6 +93,9 @@ It is not a NAND-write counter or evidence that an application overwrote the sam
 file. Native cache churn may unlink/create immutable page objects and let the
 filesystem reuse their LBAs. A disk-backed ordered interval set beside the trace
 keeps coverage analysis bounded in RAM; original traces remain available.
+The currently running frozen campaign predates these new LBA-reuse summary
+fields. Its retained `block-issues.txt` files can be analyzed with the updated
+`summarize_issues` function after capture, without rerunning storage I/O.
 
 The large quota gives buffered data time to reach writeback before eviction;
 tiny fast-turnover caches can unlink dirty files before the device sees them.

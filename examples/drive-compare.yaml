@@ -19,9 +19,8 @@ block_trace_seconds: 60
 idle_seconds: 60
 drain_seconds: 300
 concurrency: 16
-# Pattern-focused pressure: 160 independent streams into the same rank/cache.
-# Does not multiply page bytes, tier quotas, ranks, or measured counters.
-workload_multiplier: 10
+# Both server configs use timing.full_speed: true; speed up compute rather than
+# multiplying streams, KV geometry or cache quotas.
 prompt_chars: 65536
 output_tokens: 512
 process_memory_bytes: 4294967296
