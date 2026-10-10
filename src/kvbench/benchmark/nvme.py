@@ -175,7 +175,12 @@ def influx_line(fields: dict[str, Any], tags: dict[str, str], timestamp_ns: int,
         elif isinstance(value, (int, float)) and math.isfinite(value):
             metrics.append(f"{key}={float(value)}")
         elif include_strings and isinstance(value, str):
-            escaped = value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n").replace("\r", "\\r")
+            # Influx line protocol is not JSON: Telegraf rejects a \n escape
+            # in a quoted field. Flatten display text; exact multiline errors
+            # remain in the JSON status/artifacts. Only quote/backslash escape.
+            single_line = " ".join(value.splitlines())
+            single_line = "".join(" " if ord(char) < 32 or ord(char) == 127 else char for char in single_line)
+            escaped = single_line.replace("\\", "\\\\").replace('"', '\\"')
             metrics.append(f'{key}="{escaped}"')
     labels = ",".join(f"{_tag(k)}={_tag(v)}" for k, v in sorted(tags.items()))
     return f"{_tag(measurement)},{labels} {','.join(metrics)} {timestamp_ns}\n"

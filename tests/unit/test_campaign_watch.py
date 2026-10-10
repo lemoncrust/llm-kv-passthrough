@@ -148,5 +148,5 @@ def test_snapshot_reader_and_string_metric_encoding(tmp_path):
     line = influx_line({"phase_label": 'hello "phase"\nnext', "observer_ok": True},
                        {"host": "dev"}, 123, measurement="kvbench_campaign", include_strings=True)
     assert line.startswith("kvbench_campaign,")
-    assert 'phase_label="hello \\"phase\\"\\nnext"' in line
+    assert 'phase_label="hello \\"phase\\" next"' in line
     assert line.count("\n") == 1
