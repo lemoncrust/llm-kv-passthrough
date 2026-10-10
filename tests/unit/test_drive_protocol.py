@@ -155,3 +155,36 @@ async def test_campaign_telemetry_failure_stops_filler_thread(tmp_path, monkeypa
     with pytest.raises(RuntimeError, match="telemetry failed"):
         await module.campaign(cfg, 128)
     assert stopped.is_set()
+
+
+async def test_phase_preserves_request_error_when_drain_also_fails(tmp_path, monkeypatch):
+    import httpx
+
+    import kvbench.benchmark.drive as module
+
+    class FakeCollector:
+        def __init__(self, *_args, **_kwargs):
+            self.tags = {}
+
+        def collect(self):
+            return {"fields": {"sample_valid": True, "run_valid": True, "occupancy": 0.85,
+                               "run_host_bytes": 0}}
+
+    class Client:
+        async def post(self, path, **_kwargs):
+            message = "MemoryError" if path == "/v1/chat/completions" else "flush timeout"
+            return httpx.Response(500, request=httpx.Request("POST", "http://test" + path),
+                                  json={"error": {"message": message}})
+
+    monkeypatch.setattr(module, "Collector", FakeCollector)
+    cfg = Experiment(target=tmp_path, controller="/dev/nvme0", expected_serial="test", artifacts=tmp_path,
+                     configs={"a": tmp_path / "a"}, concurrency=1, interval_seconds=1,
+                     min_artifact_free_bytes=64 * 1024**2)
+    with pytest.raises(RuntimeError, match="MemoryError"):
+        await module.workload_phase(Client(), KVBenchConfig(), cfg, None,
+                                    {"capacity_bytes": 1000, "filesystem_device_id": tmp_path.stat().st_dev},
+                                    tmp_path, "lmcache", "precondition", 1, "test")
+    result = json.loads((tmp_path / "precondition-summary.json").read_text())
+    assert not result["qualified"]
+    assert "MemoryError" in result["errors"][0]
+    assert any("Drain failed" in error for error in result["errors"])

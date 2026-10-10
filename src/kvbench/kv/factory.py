@@ -67,6 +67,7 @@ def create_kv_stack(config: KVBenchConfig) -> KVStack:
             seed=config.kv.seed,
             active_ranks=config.kv.active_ranks,
             payload_generator=config.kv.payload_generator,
+            reuse_history_entries=config.kv.lmcache_reuse_history_entries,
         )
 
     if stack == "kvbm":

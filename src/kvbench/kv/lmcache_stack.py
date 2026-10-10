@@ -40,7 +40,7 @@ class LMCacheStack(KVStack):
                  model: ModelProfile | None = None, max_cpu_memory_gb: float = 2.0,
                  max_chunk_mb: int = 256, seed: int = 24301,
                  active_ranks: list[int] | None = None,
-                 payload_generator: PayloadGenerator = "torch"):
+                 payload_generator: PayloadGenerator = "torch", reuse_history_entries: int = 65536):
         self.instance_id = instance_id
         self.model_profile = model_profile
         self.model = model or get_model_profile(model_profile)
@@ -51,6 +51,9 @@ class LMCacheStack(KVStack):
             raise ValueError("Unknown payload_generator")
         self.payload_generator = payload_generator
         self.payload_scratch_bytes = scratch_bytes(payload_generator) if random_fill else 0
+        if type(reuse_history_entries) is not int or not 1 <= reuse_history_entries <= 1000000:
+            raise ValueError("reuse_history_entries must be within 1..1000000")
+        self.reuse_history_entries = reuse_history_entries
         self.tp_size = tp_size
         self.pp_size = pp_size
         self.layout = self.model.rank_layout(tp_size, pp_size)
@@ -164,6 +167,7 @@ class LMCacheStack(KVStack):
                 event="meta", op="rank_selection", backend="LMCacheStack",
                 payload_axis_order="KV,L,T,D", memory_format="KV_2LTD",
                 payload_generator=self.payload_generator, payload_scratch_bytes=self.payload_scratch_bytes,
+                lmcache_reuse_history_entries=self.reuse_history_entries,
                 **rank_selection_info(self.layout, self.active_rank_ids),
             )
         dtype = {"bf16": torch.bfloat16, "fp16": torch.float16, "fp8": torch.float8_e4m3fn,
@@ -195,6 +199,7 @@ class LMCacheStack(KVStack):
                                                         broadcast_fn=lambda _tensor, _src: None,
                                                         broadcast_object_fn=lambda obj, _src: obj)
             engine.post_init()
+            self._bound_reuse_history(engine)
             self._engines.append(engine)
             self._connectors.append(connector)
             if self._trace_recorder is not None:
@@ -204,6 +209,21 @@ class LMCacheStack(KVStack):
         self._engine = self._engines[0]
         logger.info("LMCache started: %s, active ranks %s (%d/%d modeled), %d-token chunks, %.3f GiB CPU pools",
                     namespace, self.active_rank_ids, active_count, ranks, chunk, aggregate_gb)
+
+    def _bound_reuse_history(self, engine: Any) -> None:
+        from lmcache.v1.storage_backend.cache_policy.lru import LRUCachePolicy
+
+        for backend in engine.storage_manager.storage_backends.values():
+            policy = getattr(backend, "cache_policy", None)
+            if isinstance(policy, LRUCachePolicy):
+                # LMCache 0.5.4 retains evicted hashes for reuse statistics up to
+                # 12.5 million entries. Cold multi-drive-fill workloads exhaust
+                # the address-space guard even with a bounded payload cache.
+                # Use its existing reset threshold; the OrderedDict controlling
+                # actual LRU admission/eviction is separate and stays native.
+                policy.max_num_chunk_hash = min(policy.max_num_chunk_hash, self.reuse_history_entries)
+                if len(policy.chunk_hash_to_init_timestamp) > policy.max_num_chunk_hash:
+                    policy.chunk_hash_to_init_timestamp.clear()
 
     def _require_engine(self) -> Any:
         if self._engine is None or self._closing:
@@ -322,6 +342,7 @@ class LMCacheStack(KVStack):
                 "cache_transport_dtype": self.model.effective_kv_dtype,
                 "payload_axis_order": "KV,L,T,D", "memory_format": "KV_2LTD",
                 "payload_generator": self.payload_generator, "payload_scratch_bytes": self.payload_scratch_bytes,
+                "lmcache_reuse_history_entries": self.reuse_history_entries,
                 "cache_scope": "growing KV payload only; window/fixed state is not offloaded",
                 "cache_token_alignment": self.model.cache_token_alignment,
                 "chunk_bytes": stored * self.chunk_size, "stored_bytes_per_token": stored,
@@ -343,6 +364,11 @@ class LMCacheStack(KVStack):
             rank = layout["rank"]
             for backend in engine.storage_manager.storage_backends.values():
                 info = {"rank": rank}
+                policy = getattr(backend, "cache_policy", None)
+                history = getattr(policy, "chunk_hash_to_init_timestamp", None)
+                if policy is not None and isinstance(history, dict):
+                    info["reuse_history_entries"] = len(history)
+                    info["reuse_history_limit"] = policy.max_num_chunk_hash
                 usage = getattr(backend, "usage", None)
                 if isinstance(usage, (int, float)):
                     info["usage_bytes"] = int(usage)

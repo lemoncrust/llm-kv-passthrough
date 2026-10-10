@@ -251,7 +251,8 @@ async def workload_phase(client: httpx.AsyncClient, config: KVBenchConfig, exper
                 counts["prompt_tokens"] += usage["prompt_tokens"]
                 counts["completion_tokens"] += usage["completion_tokens"]
             except Exception as exc:
-                errors.append(f"Workload request failed: {exc}")
+                detail = f"; response={exc.response.text[:2048]}" if isinstance(exc, httpx.HTTPStatusError) else ""
+                errors.append(f"Workload request failed: {type(exc).__name__}: {exc}{detail}")
                 stop_load.set()
                 return
             index += 1
@@ -275,6 +276,8 @@ async def workload_phase(client: httpx.AsyncClient, config: KVBenchConfig, exper
             if elapsed >= experiment.max_seconds:
                 errors.append("Timed out before required observed host drive fills and duration")
                 break
+    except Exception as exc:
+        errors.append(f"Phase control failed: {type(exc).__name__}: {exc}")
     finally:
         stop_load.set()
         collector.tags["phase"] = phase + "-drain"
@@ -285,6 +288,11 @@ async def workload_phase(client: httpx.AsyncClient, config: KVBenchConfig, exper
             await asyncio.to_thread(subprocess.run, ["sync", "-f", str(experiment.target)], check=True, timeout=120)
             # Continue collecting idle NAND writes after dirty host pages drain.
             await asyncio.sleep(experiment.drain_seconds)
+        except Exception as exc:
+            errors.append(f"Drain failed: {type(exc).__name__}: {exc}")
+            for worker in workers:
+                worker.cancel()
+            await asyncio.gather(*workers, return_exceptions=True)
         except BaseException:
             for worker in workers:
                 worker.cancel()
@@ -292,7 +300,10 @@ async def workload_phase(client: httpx.AsyncClient, config: KVBenchConfig, exper
             raise
         finally:
             stop_samples.set()
-            await sampler
+            try:
+                await sampler
+            except Exception as exc:
+                errors.append(f"Telemetry sampler failed: {type(exc).__name__}: {exc}")
     # A bounded smoke workload may reach the device only during syncfs. That
     # validates counter plumbing, but never qualifies as an endurance result.
     if experiment.mode == "smoke":

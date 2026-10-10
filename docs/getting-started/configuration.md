@@ -58,6 +58,7 @@ appear in `/kvbench/manifest` with rates, ranks and package versions.
 | `trace_file` | unset | JSONL trace; use a unique path for each process/run |
 | `max_cpu_memory_gb` | 2 | Aggregate active-rank CPU-pool allocation guard, GiB |
 | `max_chunk_mb` | 256 | Largest permitted rank-chunk payload, MiB |
+| `lmcache_reuse_history_entries` | 65536 | Maximum entries in each LMCache LRU diagnostic reuse-history table |
 | `random_fill` | true | High-entropy deterministic payloads; false means zeros |
 | `payload_generator` | `torch` | Legacy byte RNG, or `sfc64` for fast word-oriented high-entropy generation |
 | `seed` | 24301 | Payload seed, mixed with rank and token prefix |
@@ -80,6 +81,15 @@ arms must use the same generator. This is a statistical PRNG, not cryptographic
 randomness; it does not reuse a repeated random-data pool. NumPy version and
 the selected generator are recorded in manifests. The scratch allocation is
 included in the CPU-memory guard.
+
+LMCache 0.5.4 separately remembers first-seen hashes for reuse statistics, even
+after payload eviction. Its default permits 12.5 million entries per policy.
+The adapter limits that diagnostic table using the upstream reset threshold;
+it does not alter the native cache's OrderedDict, quota or eviction order.
+The effective history limit/count appears in traces, capacity and per-tier usage.
+Reuse-statistics history is therefore windowed, while physical I/O/WAF counters
+remain actual observed bytes. This prevents cold endurance workloads from
+exhausting the process's address-space guard merely by accumulating statistics.
 
 ### Selected-rank execution
 

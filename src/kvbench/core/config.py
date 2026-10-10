@@ -81,6 +81,10 @@ class KVStackConfig(ConfigModel):
     )
     max_cpu_memory_gb: float = Field(default=2.0, gt=0, description="Host guard: maximum aggregate LMCache CPU tier allocation (GiB)")
     max_chunk_mb: int = Field(default=256, ge=1, le=4096, description="Reject a rank chunk larger than this payload guard (MiB)")
+    lmcache_reuse_history_entries: int = Field(
+        default=65536, ge=1, le=1000000,
+        description="Bound each LMCache LRU diagnostic reuse-history table; does not change cache capacity or eviction order",
+    )
     seed: int = Field(default=24301, ge=0, le=2**63 - 1)
     active_ranks: list[int] | None = Field(
         default=None,
