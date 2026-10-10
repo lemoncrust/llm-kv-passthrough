@@ -76,6 +76,9 @@
                 "RUNNING \u2014 WAITING FOR TELEMETRY": {
                   "color": "orange"
                 },
+                "STATUS FEED STALE \u2014 CHECK TELEMETRY": {
+                  "color": "red"
+                },
                 "RUNNING \u2014 TELEMETRY STALE/INVALID": {
                   "color": "orange"
                 },
@@ -103,7 +106,7 @@
       "targets": [
         {
           "refId": "A",
-          "query": "stamp = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"observer_epoch_seconds\") |> group() |> last() |> keep(columns: [\"_time\"])\nvalue = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"state_label\") |> group()\njoin(tables: {value: value, stamp: stamp}, on: [\"_time\"]) |> keep(columns: [\"_time\", \"_value\"]) |> rename(columns: {_value: \"state_label\"})"
+          "query": "stamp = from(bucket: \"telegraf\") |> range(start: -30d) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"observer_epoch_seconds\") |> group() |> last() |> keep(columns: [\"_time\"])\nvalue = from(bucket: \"telegraf\") |> range(start: -30d) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"state_label\") |> group()\njoin(tables: {value: value, stamp: stamp}, on: [\"_time\"]) |> keep(columns: [\"_time\", \"_value\"]) |> rename(columns: {_value: \"state_label\"}) |> map(fn: (r) => ({r with state_label: if uint(v: now()) - uint(v: r._time) > uint(v: 30000000000) then \"STATUS FEED STALE \u2014 CHECK TELEMETRY\" else r.state_label}))"
         }
       ]
     },
@@ -1043,7 +1046,7 @@
     {
       "id": 26,
       "type": "stat",
-      "title": "Observer heartbeat age",
+      "title": "Status feed age",
       "gridPos": {
         "x": 12,
         "y": 36,
@@ -1089,7 +1092,7 @@
       "targets": [
         {
           "refId": "A",
-          "query": "stamp = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"observer_epoch_seconds\") |> group() |> last() |> keep(columns: [\"_time\"])\nvalue = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"observer_epoch_seconds\") |> group()\njoin(tables: {value: value, stamp: stamp}, on: [\"_time\"]) |> keep(columns: [\"_time\", \"_value\"]) |> rename(columns: {_value: \"observer_epoch_seconds\"}) |> map(fn: (r) => ({r with observer_epoch_seconds: float(v: uint(v: now())) / 1000000000.0 - r.observer_epoch_seconds}))"
+          "query": "stamp = from(bucket: \"telegraf\") |> range(start: -30d) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"observer_epoch_seconds\") |> group() |> last() |> keep(columns: [\"_time\"])\nvalue = from(bucket: \"telegraf\") |> range(start: -30d) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"observer_epoch_seconds\") |> group()\njoin(tables: {value: value, stamp: stamp}, on: [\"_time\"]) |> keep(columns: [\"_time\", \"_value\"]) |> rename(columns: {_value: \"observer_epoch_seconds\"}) |> map(fn: (r) => ({r with observer_epoch_seconds: float(v: uint(v: now())) / 1000000000.0 - r.observer_epoch_seconds}))"
         }
       ]
     },

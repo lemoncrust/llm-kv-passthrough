@@ -34,7 +34,8 @@ completion time. Missing counters/progress are shown as unavailable, not zero.
 
 Live stat queries are anchored to the latest observer timestamp. A missing ETA
 or rate therefore cannot silently show an older valid number as current. The
-heartbeat-age card detects an observer that has stopped. A clean systemd stop
+state/feed-age cards retain a 30-day last-seen fallback and explicitly label a
+stalled feed, rather than turning every panel blank. A clean systemd stop
 is distinguished from a completed, qualified experiment. Preparation WAF is
 explicitly labeled as pending qualification, not a cache-comparison result.
 
@@ -52,6 +53,12 @@ returned without errors. Tests cover stale/reset telemetry, restarted/stopped
 units, phase/arm transitions, ETA bounds and qualified versus smoke results.
 
 ## Device counters and WAF
+
+String fields are flattened for line-protocol display and only quote/backslash
+characters are escaped. In particular, JSON-style `\n` is not a valid Telegraf
+string escape and can discard the entire status point. Exact multiline errors
+remain in the JSON status and benchmark artifacts. A regression test exercises
+the real Telegraf parser with failed-campaign errors.
 
 The read-only sampler collects standard NVMe SMART host writes and OCP SMART
 physical-media writes every **5 seconds**. It appends exact raw integer counters

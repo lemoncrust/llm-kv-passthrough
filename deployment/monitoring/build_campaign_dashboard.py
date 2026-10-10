@@ -13,10 +13,12 @@ NOW = f'from(bucket: "telegraf") |> range(start: -2m) |> filter(fn: (r) => {FILT
 STAMP = NOW + ' |> filter(fn: (r) => r._field == "observer_epoch_seconds") |> group() |> last() |> keep(columns: ["_time"])'
 
 
-def current(field):
+def current(field, lookback="-2m"):
     # Anchor every stat to the latest observer point. If ETA/rates are absent
     # because telemetry went stale, do not display an older valid value as live.
-    return (f'stamp = {STAMP}\nvalue = {NOW} |> filter(fn: (r) => r._field == "{field}") |> group()\n'
+    stamp = STAMP.replace("range(start: -2m)", f"range(start: {lookback})")
+    source = NOW.replace("range(start: -2m)", f"range(start: {lookback})")
+    return (f'stamp = {stamp}\nvalue = {source} |> filter(fn: (r) => r._field == "{field}") |> group()\n'
             'join(tables: {value: value, stamp: stamp}, on: ["_time"]) |> keep(columns: ["_time", "_value"]) '
             f'|> rename(columns: {{_value: "{field}"}})')
 
@@ -27,13 +29,13 @@ panels = [{"id": 1, "type": "text", "title": "Live campaign — follows phase/ru
                "Updates every **10 seconds** and follows the active phase/run automatically. ETA uses a rolling observed rate and is hidden when stale, stopped or draining. **Preparation WAF is not a cache-comparison result.** Live cards use the latest observer point; charts follow the time picker. [Detailed WAF dashboard](/d/kvbench-nvme-waf)"}}]
 
 
-def stat(title, field, x, y, w=4, h=4, unit="none", kind="stat", **defaults):
+def stat(title, field, x, y, w=4, h=4, unit="none", kind="stat", lookback="-2m", **defaults):
     panels.append({"id": len(panels) + 1, "type": kind, "title": title,
                    "gridPos": {"x": x, "y": y, "w": w, "h": h}, "datasource": DS,
                    "fieldConfig": {"defaults": {"unit": unit, "noValue": "—", **defaults}, "overrides": []},
                    "options": {"reduceOptions": {"calcs": ["lastNotNull"], "fields": f"/^{field}$/", "values": False},
                                "textMode": "value", "colorMode": "value", "graphMode": "none"},
-                   "targets": [{"refId": "A", "query": current(field)}]})
+                   "targets": [{"refId": "A", "query": current(field, lookback)}]})
 
 
 state_map = [{"type": "value", "options": {
@@ -42,9 +44,11 @@ state_map = [{"type": "value", "options": {
     "STARTING": {"color": "orange"}, "STOPPING": {"color": "orange"},
     "ACTIVATING": {"color": "orange"},
     "RUNNING — WAITING FOR TELEMETRY": {"color": "orange"},
+    "STATUS FEED STALE — CHECK TELEMETRY": {"color": "red"},
     "RUNNING — TELEMETRY STALE/INVALID": {"color": "orange"}, "OBSERVER ERROR": {"color": "red"},
 }}]
-stat("Campaign state", "state_label", 0, 3, 4, mappings=state_map)
+stat("Campaign state", "state_label", 0, 3, 4, mappings=state_map, lookback="-30d")
+panels[-1]["targets"][0]["query"] += ' |> map(fn: (r) => ({r with state_label: if uint(v: now()) - uint(v: r._time) > uint(v: 30000000000) then "STATUS FEED STALE — CHECK TELEMETRY" else r.state_label}))'
 stat("Current phase", "phase_label", 4, 3, 8)
 stat("Current phase goal", "phase_goal_label", 12, 3, 6)
 stat("Next step", "next_phase_label", 18, 3, 6)
@@ -100,7 +104,7 @@ stat("Fresh, valid source telemetry", "telemetry_ok", 4, 36, mappings=bool_map)
 stat("Source sample age", "telemetry_age_seconds", 8, 36, unit="s",
      thresholds={"mode": "absolute", "steps": [{"color": "green", "value": None},
                                                  {"color": "red", "value": 30}]})
-stat("Observer heartbeat age", "observer_epoch_seconds", 12, 36, unit="s",
+stat("Status feed age", "observer_epoch_seconds", 12, 36, unit="s", lookback="-30d",
      thresholds={"mode": "absolute", "steps": [{"color": "green", "value": None},
                                                  {"color": "red", "value": 30}]})
 panels[-1]["targets"][0]["query"] += ' |> map(fn: (r) => ({r with observer_epoch_seconds: float(v: uint(v: now())) / 1000000000.0 - r.observer_epoch_seconds}))'
