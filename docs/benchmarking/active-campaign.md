@@ -4,21 +4,52 @@
 updates every 10 seconds and follows phase/run transitions automatically.
 The information below is the launch record; use the dashboard for current progress.
 
-**Status as checked at 2026-10-09 18:29 UTC: running, in accelerated filler preparation.**
+**Status as checked at 2026-10-10 15:38 UTC: restarted, in LMCache preconditioning (arm 1/4).**
 There is no qualified endurance result yet. This page records the launch;
 runtime state and final summaries are in the artifacts below.
 
+## Overnight failure and recovery
+
+Preparation reached 85% occupancy on October 10 at 00:17 UTC. The first comparison
+run, `20261010T001733-7bc9f83d`, failed at 01:13 UTC after about 1.47 TB of observed
+host writes (4.77% of its first preconditioning drive fill). No arm completed.
+
+The first server exception was `MemoryError` in LMCache 0.5.4's
+`LRUCachePolicy.chunk_hash_to_init_timestamp`. That diagnostic table retained
+evicted hashes with a default reset threshold of 12.5 million entries. A later
+flush timed out, and the original runner exposed the drain error instead of
+retaining the initiating request errors.
+
+The observer correctly recorded `FAILED` in its JSON output, but the error
+contained a newline. Our metric formatter emitted a JSON-style `\n` escape
+that Telegraf rejected, so failure updates disappeared from Grafana. The fix
+flattens display strings while preserving full JSON errors and is tested with
+the actual Telegraf parser. Status/feed-age cards now explicitly report a stale
+feed even when recent points disappear.
+
+The new adapter bounds each LRU diagnostic history at 65,536 entries using the
+upstream threshold. Native cache ordering, quotas, payload layout and the 4 GiB
+guards are retained. Tests compare eviction order with the unmodified policy
+and exercise real disk churn. Request and drain errors are now both saved in
+the phase summary. Validation: **721 passed, one skipped**, plus Ruff/mypy.
+
+The failed evidence remains intact. A fresh campaign started at 15:36 UTC using
+the already prepared drive; no filler was rewritten. It retains 16 streams and
+full-speed GPU emulation. The restart is under observation; short checks do not
+establish that a multi-drive-fill run has completed.
+
 ## Identity and supervision
 
-- Unit: `kvbench-waf-5d497ce9.service`, on dev, running as `wvaske`.
-- Frozen source revision: `5d497ce9d1110a0be96e4513ad4c990470a178bc`.
+- Unit: `kvbench-waf-c0361977.service`, on dev, running as `wvaske`.
+- Frozen source revision: `c03619772f28870668c4955fb9cdb8711c2abab1`.
 - Detached checkout:
-  `/mnt/development/wvaske/kvbench-runs/source-5d497ce9d1110a0be96e4513ad4c990470a178bc`.
+  `/mnt/development/wvaske/kvbench-runs/source-c03619772f28870668c4955fb9cdb8711c2abab1`.
 - Configuration: that checkout's `examples/drive-compare.yaml`.
 - Physical drive: Dell/Micron 6500 RI FIPS 30.7 TB, serial `2337448A0113`,
   `/dev/nvme6n1`; test filesystem `/mnt/work`, workload root `/mnt/work/kvbench`.
 - Run artifacts: `/mnt/development/wvaske/kvbench-runs` (off the test drive).
-- Preparation ID: `prepare-20261009T182701-c56ab3ac`.
+- Active comparison ID: `20261010T153634-9eb500c9`.
+- Completed accelerated preparation ID: `prepare-20261009T182701-c56ab3ac`.
 - Preparation telemetry: `<artifacts>/<preparation-ID>/samples.jsonl`.
 - Owned filler: `/mnt/work/kvbench/<preparation-ID>/`; manifest updated per 8 GiB file.
 
@@ -79,15 +110,16 @@ it cannot become a completed/qualified result merely by reaching a deadline.
 ## Inspect or stop
 
 ```bash
-systemctl status kvbench-waf-5d497ce9.service
-journalctl -u kvbench-waf-5d497ce9.service -f
+systemctl status kvbench-waf-c0361977.service
+journalctl -u kvbench-waf-c0361977.service -f
 
 # Stops only this campaign; leaves existing data, filler and evidence intact.
-sudo systemctl stop kvbench-waf-5d497ce9.service
+sudo systemctl stop kvbench-waf-c0361977.service
 ```
 
-[Grafana dashboard](http://172.16.2.20:3000/d/kvbench-nvme-waf). Select the
-preparation ID now; the comparison creates a new run ID after preparation.
+[Live status](http://172.16.2.20:3000/d/kvbench-campaign) automatically follows the
+new comparison. In the [detailed WAF dashboard](http://172.16.2.20:3000/d/kvbench-nvme-waf),
+select comparison ID `20261010T153634-9eb500c9`.
 The independent `kvbench-nvme.service` continues monitoring if the campaign stops.
 
 Before accelerated launch: **705 tests passed, one skipped**, Ruff/mypy passed, strict
