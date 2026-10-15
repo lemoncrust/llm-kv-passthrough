@@ -47,6 +47,7 @@ class Node:
     thread: str
     attrs: dict[str, Any]
     children: list[Node] = field(default_factory=list)
+    tid: int = 0  # OS thread id; 0 in traces written before it was recorded
 
     @property
     def end_ms(self) -> float:
@@ -76,6 +77,7 @@ class Node:
             "start_ms": self.start_ms,
             "dur_ms": self.dur_ms,
             "thread": self.thread,
+            "tid": self.tid,
             "attrs": self.attrs,
             "children": [c.to_dict() for c in self.children],
         }
@@ -229,6 +231,7 @@ def _node(record: dict[str, Any]) -> Node:
         dur_ms=float(record.get("dur_ms", 0.0)),
         thread=str(record.get("thread", "")),
         attrs=dict(record.get("attrs") or {}),
+        tid=int(record.get("tid") or 0),
     )
 
 

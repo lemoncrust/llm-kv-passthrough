@@ -10,7 +10,11 @@ object per span when it closes:
     {"trace_id": "<request id>", "span_id": "...", "parent_id": "..."|null,
      "name": "kv.retrieve", "ts": <epoch seconds of start>,
      "start_ms": <ms since tracer start, monotonic>, "dur_ms": <float>,
-     "thread": "<thread name>", "attrs": {...}}
+     "thread": "<thread name>", "tid": <kernel thread id>, "attrs": {...}}
+
+``thread`` is the Python thread name, which pools reuse across instances
+(two LMCache engines each own a ``disk-read_0``); ``tid`` is the OS thread
+id (``threading.get_native_id()``) and tells such threads apart.
 
 The current span travels in a ContextVar, so nested calls — including work
 moved off the event loop with asyncio.to_thread, which copies the caller's
@@ -53,6 +57,7 @@ class Span:
     attrs: dict[str, Any] = field(default_factory=dict)
     end_mono: float | None = None
     thread: str = ""
+    tid: int = 0
 
     def set(self, **attrs: Any) -> Span:
         self.attrs.update(attrs)
@@ -150,6 +155,7 @@ class Tracer:
             start_mono=time.perf_counter(),
             attrs=dict(attrs),
             thread=threading.current_thread().name,
+            tid=threading.get_native_id(),
         )
 
     def end(self, span: Span, **attrs: Any) -> None:
@@ -216,6 +222,7 @@ class Tracer:
             "start_ms": round(start * 1000, 3),
             "dur_ms": round((end - start) * 1000, 3),
             "thread": span.thread,
+            "tid": span.tid,
             "attrs": span.attrs,
         }
         line = json.dumps(rec, separators=(",", ":"), default=str) + "\n"

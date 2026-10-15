@@ -103,6 +103,22 @@ class TestContextPropagation:
         assert by["rank.store"]["trace_id"] == "t"
         assert by["rank.store"]["thread"] != by["request"]["thread"]
 
+    async def test_spans_record_os_thread_id(self, tracer):
+        # Pool threads reuse names across executor instances (two LMCache
+        # engines each have a "disk-read_0"); the kernel thread id tells
+        # them apart, so every span carries it next to the name.
+        def worker():
+            with spans.span("io.read"):
+                pass
+
+        with spans.root("request", trace_id="t"):
+            await asyncio.to_thread(worker)
+
+        by = by_name(read(tracer))
+        assert by["request"]["tid"] == threading.get_native_id()
+        assert isinstance(by["io.read"]["tid"], int)
+        assert by["io.read"]["tid"] not in (0, by["request"]["tid"])
+
     async def test_concurrent_requests_keep_separate_trees(self, tracer):
         async def handle(i: int) -> None:
             with spans.root("request", trace_id=f"r{i}"):

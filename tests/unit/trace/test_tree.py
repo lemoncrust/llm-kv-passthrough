@@ -135,6 +135,16 @@ class TestBuild:
         assert [c["name"] for c in req["children"]][:2] == ["tokenize", "kv.lookup"]
         assert data["orphans"][1]["name"] == "io.write"
 
+    def test_os_thread_id_round_trips_and_defaults_to_zero(self):
+        # Pool thread names repeat across LMCache engines; the OS thread id
+        # is what tells them apart. Old traces without it read back as 0.
+        recs = request_records("a1", 100.0, conversation="convA", turn=0)
+        next(r for r in recs if r["name"] == "request")["tid"] = 4242
+        data = build(recs).to_dict()
+        req = data["conversations"][0]["requests"][0]
+        assert req["tid"] == 4242
+        assert {n["tid"] for n in req["children"]} == {0}
+
 
 class TestLoadAndCli:
     def write(self, tmp_path):
