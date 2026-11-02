@@ -332,6 +332,31 @@ def warmup(
         raise typer.Exit(1)
 
 
+@app.command(name="otlp-receive")
+def otlp_receive(
+    trace_file: str = typer.Option(
+        "/tmp/vllm-request-trace.jsonl", "--trace-file", help="Span JSONL file to write"
+    ),
+    host: str = typer.Option("127.0.0.1", "--host", help="Interface to bind"),
+    port: int = typer.Option(4318, "--port", "-p", help="OTLP/HTTP port"),
+) -> None:
+    """Receive vLLM's OTLP request traces and write them as kvbench spans.
+
+    Start vLLM with OTEL_EXPORTER_OTLP_TRACES_PROTOCOL=http/protobuf and
+    --otlp-traces-endpoint http://HOST:PORT/v1/traces.
+    """
+    import uvicorn
+
+    from kvbench.vllm_trace.otlp import SpanFileWriter, create_app
+
+    writer = SpanFileWriter(trace_file)
+    console.print(f"Writing vLLM request spans to {trace_file}")
+    try:
+        uvicorn.run(create_app(writer), host=host, port=port, log_level="warning")
+    finally:
+        writer.close()
+
+
 @app.command()
 def trace2fio(
     trace: str = typer.Argument(..., help="KV trace JSONL file (from serve --trace-file)"),
