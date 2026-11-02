@@ -192,19 +192,38 @@ class CombinedServer:
         ]
         return mock_tokens[position % len(mock_tokens)]
 
-    async def _process_prefill(self, prompt: str) -> tuple[int, int, int]:
+    async def _process_prefill(
+        self,
+        prompt: str,
+        prompt_token_ids: list[int] | None = None,
+    ) -> tuple[int, int, int]:
         """Process prefill phase.
+
+        Args:
+            prompt: Raw prompt text (used when prompt_token_ids is absent).
+            prompt_token_ids: Exact token IDs from the client tokenizer.
+                When provided, these are used directly as the token sequence
+                (both for the token count and as the KV cache key), bypassing
+                simulate_tokenize entirely. This guarantees that kvbench and
+                vLLM see the exact same token sequence for deterministic
+                comparison.
 
         Returns:
             Tuple of (num_tokens, cache_hits, cache_misses).
         """
         with spans.span("tokenize", prompt_chars=len(prompt)) as sp:
-            tokens = self.processor.simulate_tokenize(prompt)
+            if prompt_token_ids is not None:
+                # Use caller-provided token IDs directly — exact count,
+                # exact cache key, no heuristic approximation.
+                tokens = prompt_token_ids
+            else:
+                tokens = self.processor.simulate_tokenize(prompt)
             num_tokens = len(tokens)
             sp.set(
                 tokens=num_tokens,
                 full_chunks=num_tokens // self.chunk_size,
                 chunk_size=self.chunk_size,
+                exact_ids=prompt_token_ids is not None,
             )
 
         # Ask the KV stack how much of the sequence is already cached
@@ -288,7 +307,9 @@ class CombinedServer:
         try:
             # Prefill phase
             prompt = request.prompt_text or ""
-            num_prompt_tokens, hits, misses = await self._process_prefill(prompt)
+            num_prompt_tokens, hits, misses = await self._process_prefill(
+                prompt, prompt_token_ids=request.prompt_token_ids
+            )
             self.stats.prompt_tokens += num_prompt_tokens
             self.stats.cache_hits += hits
             self.stats.cache_misses += misses
@@ -377,7 +398,9 @@ class CombinedServer:
         try:
             # Prefill phase
             prompt = request.prompt_text or ""
-            num_prompt_tokens, hits, misses = await self._process_prefill(prompt)
+            num_prompt_tokens, hits, misses = await self._process_prefill(
+                prompt, prompt_token_ids=request.prompt_token_ids
+            )
             self.stats.prompt_tokens += num_prompt_tokens
             self.stats.cache_hits += hits
             self.stats.cache_misses += misses

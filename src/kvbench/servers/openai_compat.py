@@ -93,6 +93,12 @@ class ChatCompletionRequest(BaseModel):
     user: str | None = None
     response_format: ResponseFormat | None = None
     seed: int | None = None
+    # Non-standard extension: pre-tokenized input as exact token IDs.
+    # When provided, kvbench uses len(prompt_token_ids) as the token count
+    # and the IDs directly as the KV cache key, bypassing simulate_tokenize.
+    # vLLM ignores this field. This allows deterministic apples-to-apples
+    # comparison: both systems see the exact same token sequence.
+    prompt_token_ids: list[int] | None = None
 
     @property
     def output_token_limit(self) -> int | None:
