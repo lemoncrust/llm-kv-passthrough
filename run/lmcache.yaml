@@ -1,0 +1,8 @@
+chunk_size: 256
+local_cpu: false
+max_local_cpu_size: 4.0
+local_disk: "file:///home/admin/aditya/llm-kv-passthrough/run/lmcache-cache/"
+max_local_disk_size: 100.0
+pre_caching_hash_algorithm: sha256_cbor
+extra_config:
+  use_odirect: true
