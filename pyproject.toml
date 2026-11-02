@@ -45,6 +45,9 @@ dependencies = [
 lmcache = [
     "lmcache~=0.5.1",
 ]
+otlp = [
+    "opentelemetry-proto>=1.20.0",
+]
 dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",
@@ -62,7 +65,7 @@ docs = [
     "mkdocstrings[python]>=0.24.0",
 ]
 all = [
-    "kvbench[lmcache,dev,docs]",
+    "kvbench[lmcache,otlp,dev,docs]",
 ]
 
 [project.scripts]
