@@ -132,46 +132,6 @@ def make_stats(vals: list[float], show_std: bool) -> dict | None:
     return d
 
 
-CHUNK_SIZE = 256   # from lmcache.yaml
-
-
-def per_chunk_request(spans: list[dict], op: str, show_std: bool,
-                      only_real: bool = True,
-                      io_op: str | None = None) -> dict | None:
-    """Per-chunk cost: total op duration / number of chunks, per request.
-
-    Chunk count comes from attrs['chunks'] if present, else attrs['tokens']/CHUNK_SIZE,
-    else counts io_op spans for the same trace_id (used for kv.load_init).
-    """
-    # Build io_op counts per trace_id if needed
-    io_counts: dict[str, int] = {}
-    if io_op:
-        for s in spans:
-            if s["name"] == io_op:
-                tid = s.get("trace_id", "_")
-                io_counts[tid] = io_counts.get(tid, 0) + 1
-
-    by_req: dict[str, tuple[float, int]] = {}   # trace_id → (dur_ms, chunks)
-    for s in spans:
-        if s["name"] != op:
-            continue
-        tid = s.get("trace_id")
-        if only_real and not is_real_request(tid):
-            continue
-        dur = s["dur_ms"]
-        attrs = s.get("attrs", {})
-        n_chunks = (attrs.get("chunks") or
-                    (attrs.get("tokens", 0) // CHUNK_SIZE) or
-                    io_counts.get(tid, 1) or 1)
-        if tid not in by_req:
-            by_req[tid or "_"] = (0.0, n_chunks)
-        prev_dur, prev_n = by_req[tid or "_"]
-        by_req[tid or "_"] = (prev_dur + dur, max(prev_n, n_chunks))
-
-    vals = [dur / max(n, 1) for dur, n in by_req.values() if n > 0]
-    return make_stats(vals, show_std)
-
-
 def per_request(spans: list[dict], op: str, show_std: bool,
                 only_real: bool = True) -> dict | None:
     """Sum op durations per trace_id, stats across requests."""
@@ -184,20 +144,6 @@ def per_request(spans: list[dict], op: str, show_std: bool,
             continue
         by_req[tid or "_"] += s["dur_ms"]
     return make_stats(list(by_req.values()), show_std)
-
-
-def per_span(spans: list[dict], op: str, show_std: bool,
-             only_real: bool = True, min_ms: float = 0.0) -> dict | None:
-    """Stats across individual span durations."""
-    vals = []
-    for s in spans:
-        if s["name"] != op:
-            continue
-        if only_real and not is_real_request(s.get("trace_id")):
-            continue
-        if s["dur_ms"] >= min_ms:
-            vals.append(s["dur_ms"])
-    return make_stats(vals, show_std)
 
 
 def assign_turns(spans: list[dict], n_turns: int) -> dict[str, int]:
@@ -218,53 +164,6 @@ def assign_turns(spans: list[dict], n_turns: int) -> dict[str, int]:
             earliest[tid] = t
     ordered = sorted(earliest, key=lambda t: earliest[t])
     return {tid: rank % n_turns for rank, tid in enumerate(ordered)}
-
-
-def per_span_by_turn(spans: list[dict], op: str, show_std: bool,
-                      turn_map: dict[str, int], n_turns: int) -> dict[int, dict | None]:
-    """Stats across individual span durations grouped by turn (for per-chunk ops)."""
-    by_turn: dict[int, list[float]] = {i: [] for i in range(n_turns)}
-    for s in spans:
-        if s["name"] != op:
-            continue
-        tid = s.get("trace_id", "")
-        if not is_real_request(tid) or tid not in turn_map:
-            continue
-        by_turn[turn_map[tid]].append(s["dur_ms"])
-    return {i: make_stats(by_turn[i], show_std) for i in range(n_turns)}
-
-
-def per_chunk_by_turn(spans: list[dict], op: str, show_std: bool,
-                       turn_map: dict[str, int], n_turns: int,
-                       io_op: str | None = None) -> dict[int, dict | None]:
-    """Per-chunk stats grouped by turn: total op / chunk_count, per turn."""
-    io_counts: dict[str, int] = {}
-    if io_op:
-        for s in spans:
-            if s["name"] == io_op and is_real_request(s.get("trace_id", "")):
-                tid = s.get("trace_id", "")
-                io_counts[tid] = io_counts.get(tid, 0) + 1
-
-    by_turn: dict[int, list[float]] = {i: [] for i in range(n_turns)}
-    totals: dict[str, tuple[float, int]] = {}
-    for s in spans:
-        if s["name"] != op:
-            continue
-        tid = s.get("trace_id", "")
-        if not is_real_request(tid) or tid not in turn_map:
-            continue
-        attrs = s.get("attrs", {})
-        n_chunks = (attrs.get("chunks") or
-                    (attrs.get("tokens", 0) // CHUNK_SIZE) or
-                    io_counts.get(tid, 1) or 1)
-        prev_dur, prev_n = totals.get(tid, (0.0, n_chunks))
-        totals[tid] = (prev_dur + s["dur_ms"], max(prev_n, n_chunks))
-
-    for tid, (dur, n_chunks) in totals.items():
-        if tid in turn_map:
-            by_turn[turn_map[tid]].append(dur / max(n_chunks, 1))
-
-    return {i: make_stats(by_turn[i], show_std) for i in range(n_turns)}
 
 
 def per_request_by_turn(spans: list[dict], op: str, show_std: bool,
@@ -398,11 +297,9 @@ def build_turn_table(metric_label: str,
 
 # ── Metrics for a case ────────────────────────────────────────────────────────
 def gather_metrics(vllm_spans: list[dict], kb_spans: list[dict],
-                   is_multiturn: bool, show_std: bool,
-                   per_chunk: bool = False) -> list[dict]:
-    # kb/kb_span helpers — is_real_request() now accepts UUID format IDs
+                   is_multiturn: bool, show_std: bool) -> list[dict]:
+    # kb helper — is_real_request() now accepts UUID format IDs
     def kb(op, **kw):      return per_request(kb_spans, op, show_std, **kw)
-    def kb_span(op, **kw): return per_span(kb_spans,    op, show_std, **kw)
     """
     Returns list of metric rows, each:
       {"label": str, "real": stats|None, "emul": stats|None}
@@ -470,31 +367,6 @@ def gather_metrics(vllm_spans: list[dict], kb_spans: list[dict],
         per_request(vllm_spans, "io.read", show_std, only_real=True),
         kb("io.read"),
         required_both=True)
-
-    # Per-chunk breakdown — only when --per-chunk flag is passed
-    if per_chunk:
-        add("kv.store / chunk",
-            per_chunk_request(vllm_spans, "kv.store",   show_std),
-            per_chunk_request(kb_spans, "kv.store", show_std))
-        add("gpu.copy_out / chunk",
-            per_chunk_request(vllm_spans, "gpu.copy_out", show_std,
-                              only_real=True, io_op="io.write"),
-            kb_span("gpu.copy_out", show_std, only_real=True))
-        add("kv.retrieve / chunk",
-            per_chunk_request(vllm_spans, "kv.load_init", show_std,
-                              only_real=True, io_op="io.read"),
-            per_chunk_request(kb_spans, "rank.retrieve", show_std,
-                              only_real=True),
-            required_both=True)
-        add("io.read / chunk",
-            per_span(vllm_spans, "io.read", show_std, only_real=False),
-            kb_span("io.read", show_std, only_real=False),
-            required_both=True)
-        add("gpu.copy_in / chunk",
-            per_chunk_request(vllm_spans, "gpu.copy_in", show_std,
-                              only_real=True, io_op="io.read"),
-            kb("gpu.copy_in", show_std, only_real=True),
-            required_both=True)
 
     return rows
 
@@ -623,8 +495,7 @@ CASES = [
 # ── Build ─────────────────────────────────────────────────────────────────────
 def build(vllm_dir: Path, kb_dir: Path, out: Path, show_std: bool,
           vllm_mt_dir: Path | None = None, kb_mt_dir: Path | None = None,
-          vllm_conc_dir: Path | None = None, kb_conc_dir: Path | None = None,
-          per_chunk: bool = False) -> None:
+          vllm_conc_dir: Path | None = None, kb_conc_dir: Path | None = None) -> None:
     """vllm_mt_dir / kb_mt_dir override for multi-turn; *_conc_dir for concurrency cases."""
     doc = SimpleDocTemplate(str(out), pagesize=landscape(A4),
                             leftMargin=MARGIN, rightMargin=MARGIN,
@@ -689,7 +560,7 @@ def build(vllm_dir: Path, kb_dir: Path, out: Path, show_std: bool,
         story.append(Paragraph(case["note"], S["note"]))
 
         if not case["multiturn"]:
-            rows = gather_metrics(vllm_spans, kb_spans, False, show_std, per_chunk)
+            rows = gather_metrics(vllm_spans, kb_spans, False, show_std)
             story.append(build_table(rows, show_std))
 
         else:
@@ -720,23 +591,14 @@ def build(vllm_dir: Path, kb_dir: Path, out: Path, show_std: bool,
             # io.read/io.write have random trace_ids (async worker threads)
             # and cannot be grouped per-turn; they appear in the flat table.
             for op_label, op_name_v, op_name_k, required_both in [
-                ("kv.lookup",          "kv.lookup",    "kv.lookup",    False),
-                ("kv.store / chunk",   "kv.store",     "kv.store",     False),
-                ("gpu.copy_out / chunk","gpu.copy_out", "gpu.copy_out", False),
-                ("io.read  / chunk",   "io.read",      "io.read",      True),
-                ("gpu.copy_in / chunk","gpu.copy_in",  "gpu.copy_in",  True),
+                ("kv.lookup",    "kv.lookup",    "kv.lookup",    False),
+                ("kv.store",     "kv.store",     "kv.store",     False),
+                ("gpu.copy_out", "gpu.copy_out", "gpu.copy_out", False),
+                ("io.read",      "io.read",      "io.read",      True),
+                ("gpu.copy_in",  "gpu.copy_in",  "gpu.copy_in",  True),
             ]:
-                # For per-chunk ops: divide per-request total by chunk count
-                is_per_chunk = "/ chunk" in op_label
-                if is_per_chunk:
-                    vllm_by_turn = per_chunk_by_turn(
-                        vllm_spans, op_name_v, show_std, vllm_turns, n_turns,
-                        io_op="io.read" if "copy_in" in op_label or "retrieve" in op_label else "io.write")
-                    kb_by_turn = per_span_by_turn(
-                        kb_spans, op_name_k, show_std, kb_turns, n_turns)
-                else:
-                    vllm_by_turn = per_request_by_turn(vllm_spans, op_name_v, show_std, vllm_turns, n_turns)
-                    kb_by_turn   = per_request_by_turn(kb_spans,   op_name_k, show_std, kb_turns,   n_turns)
+                vllm_by_turn = per_request_by_turn(vllm_spans, op_name_v, show_std, vllm_turns, n_turns)
+                kb_by_turn   = per_request_by_turn(kb_spans,   op_name_k, show_std, kb_turns,   n_turns)
                 # required_both: skip if neither side has any data
                 has_vllm = any(vllm_by_turn[i] for i in range(n_turns))
                 has_kb   = any(kb_by_turn[i]   for i in range(n_turns))
@@ -775,8 +637,6 @@ def main():
                     help="kvbench traces dir for concurrency cases")
     ap.add_argument("--output", "-o", default=None)
     ap.add_argument("--no-stddev",  action="store_true", help="Omit ±σ from mean cells")
-    ap.add_argument("--per-chunk",  action="store_true",
-                    help="Add per-chunk breakdown rows (kv.store/chunk, io.read/chunk etc.)")
     ap.add_argument("--name", "-n", default=None,
                     help="Report name used in filename, e.g. odirect_1 → comparison_odirect_1.pdf")
     args = ap.parse_args()
@@ -793,8 +653,7 @@ def main():
 
     build(vllm_dir, kb_dir, out, show_std=not args.no_stddev,
           vllm_mt_dir=vllm_mt_dir, kb_mt_dir=kb_mt_dir,
-          vllm_conc_dir=vllm_conc_dir, kb_conc_dir=kb_conc_dir,
-          per_chunk=args.per_chunk)
+          vllm_conc_dir=vllm_conc_dir, kb_conc_dir=kb_conc_dir)
 
 
 if __name__ == "__main__":
