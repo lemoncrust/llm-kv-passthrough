@@ -139,6 +139,21 @@ GPU_PROFILES: dict[str, GPUProfile] = {
         nvlink_bandwidth_gb_s=None,  # single package (NVLink-C2C to CPU only)
         tdp_watts=140,
     ),
+    "RTX_PRO_6000_BW": GPUProfile(
+        name="NVIDIA RTX PRO 6000 Blackwell Server Edition",
+        # Datasheet: 1 PFLOPS BF16 tensor (structured-sparsity figure).
+        # Dense BF16 = 500 TFLOPS (2:4 sparsity 2x multiplier applies on Blackwell
+        # consumer/pro dies, same as Ada Lovelace).
+        bf16_tflops=500.0,
+        # Memory is GDDR7 (512-bit interface), not HBM — field name is a misnomer.
+        # 1.597 TB/s is the official datasheet bandwidth.
+        hbm_bandwidth_tb_s=1.597,
+        hbm_capacity_gb=96,          # 96 GB GDDR7
+        nvlink_bandwidth_gb_s=None,  # no NVLink; PCIe server card
+        pcie_bandwidth_gb_s=128.0,   # PCIe Gen5 x16
+        # Datasheet max is 600 W; our deployment is configured at 450 W power cap.
+        tdp_watts=450,
+    ),
     "STRIX_HALO_IGPU": GPUProfile(
         name="AMD Radeon 8060S (Strix Halo iGPU, gfx1151)",
         # Coarse RDNA 3.5 estimate (40 CU); pair with calibrated timing —
