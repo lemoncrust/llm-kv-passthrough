@@ -1,0 +1,37 @@
+# Timing anchors: NVIDIA RTX PRO 6000 Blackwell Server Edition.
+#
+# Hardware notes
+# --------------
+# Memory: 96 GB GDDR7 @ 1.597 TB/s (512-bit bus) — NOT HBM.
+# Compute: 1 PFLOPS BF16 with structured sparsity → 500 TFLOPS dense BF16.
+# Power: configured at 450 W (datasheet max 600 W).
+# PCIe Gen5 x16.
+#
+# Measurement conditions
+# ----------------------
+# Run: vLLM v0.28.1rc1, enforce-eager (no CUDAGraph), no prefix caching,
+#      no KV connector, no LMCache, no OTLP tracing — plain vLLM only.
+#      CUDA_VISIBLE_DEVICES=0, concurrency=1, 12 requests.
+# ISL: 2047 tokens (aiperf adds one system-message token; effectively 2048).
+# OSL: 64 tokens.
+#
+# ttft_ms: p50 across all 12 requests = 21.3 ms. Distribution is tight
+#   (p90=22.3 ms) except req 0 (JIT, 74.8 ms). Warm mean ≈ 21.4 ms.
+#   This is pure GPU compute: no KV connector, no LMCache, no tracing.
+#   Previous measurement (35 ms) was inflated by kv.load_init (~4 ms) and
+#   kv.store (~9 ms) from LMCache running alongside.
+# tpot_ms: p50=3.31 ms, avg=3.32 ms, std=0.04 ms — extremely stable
+#   across all 12 requests.
+
+- model: llama-3.2-1b
+  gpu: RTX_PRO_6000_BW
+  isl: 2048
+  osl: 64
+  ttft_ms: 21.3
+  tpot_ms: 3.31
+  source: experiment
+  citation: "aiperf 12-req run 2026-11-03, plain vLLM 0.28.1rc1, enforce-eager, 450W cap, no LMCache"
+  notes: >
+    Pure GPU compute, no KV connector overhead. p50 of 12 requests;
+    JIT warmup (req 0, 74.8 ms) included in the percentile but not
+    material at p50. Warm steady-state range 21.0–22.3 ms.
