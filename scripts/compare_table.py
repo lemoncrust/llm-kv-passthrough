@@ -109,7 +109,10 @@ def main() -> None:
             print(f"== {tag}: no traces under {run_dir}")
     if shown:
         print("Δ = (kvbench - vLLM) / vLLM. gpu spans are limited to real requests. "
-              "Multi-turn cases are shown flat (all turns together).")
+              "Multi-turn cases are shown flat (all turns together).\n"
+              "Prefill: vLLM = OTLP prefill minus the same request's kv.lookup, kv.load_init "
+              "and kv.store (kv.store stays in for older traces where it still contains the "
+              "GPU wait); kvbench = prefill.compute.")
     elif wanted is None:
         print(f"No case directories with traces found under {run_dir}.")
 

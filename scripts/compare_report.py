@@ -146,6 +146,56 @@ def per_request(spans: list[dict], op: str, show_std: bool,
     return make_stats(list(by_req.values()), show_std)
 
 
+# Real-vLLM spans inside the OTLP prefill window that are KV I/O, not compute
+# (kv.store is handled separately below).
+KV_IO_SPANS = ("kv.lookup", "kv.load_init")
+
+
+def prefill_excl_kv_io(spans: list[dict]) -> dict[str, float]:
+    """Per request: OTLP prefill minus that request's own KV I/O spans.
+
+    Subtracted request by request, with a missing span counting as 0: the first
+    request has no kv.load_init and a fully cached prompt has no kv.store. Spans
+    that vLLM could not tie to one request (batched steps under concurrency)
+    carry other ids and are not subtracted.
+
+    Older traces have a kv.store that still contains the wait for the GPU forward
+    pass, i.e. compute. Subtracting it would remove compute too, so kv.store is
+    only subtracted for requests that also have the separate gpu.forward_wait span.
+    """
+    prefill: dict[str, float] = defaultdict(float)
+    kv_io: dict[str, float] = defaultdict(float)
+    store: dict[str, float] = defaultdict(float)
+    store_excludes_wait: set[str] = set()
+    for s in spans:
+        tid = s.get("trace_id")
+        if not is_real_request(tid):
+            continue
+        name = s["name"]
+        if name == "prefill":
+            prefill[tid] += s["dur_ms"]
+        elif name == "kv.store":
+            store[tid] += s["dur_ms"]
+        elif name == "gpu.forward_wait":
+            store_excludes_wait.add(tid)
+        elif name in KV_IO_SPANS:
+            kv_io[tid] += s["dur_ms"]
+    return {tid: ms - kv_io.get(tid, 0.0)
+                 - (store.get(tid, 0.0) if tid in store_excludes_wait else 0.0)
+            for tid, ms in prefill.items()}
+
+
+def prefill_excl_kv_io_by_turn(spans: list[dict], show_std: bool,
+                               turn_map: dict[str, int], n_turns: int
+                               ) -> dict[int, dict | None]:
+    """prefill_excl_kv_io() stats broken down by turn index."""
+    by_turn: dict[int, list[float]] = {i: [] for i in range(n_turns)}
+    for tid, ms in prefill_excl_kv_io(spans).items():
+        if tid in turn_map:
+            by_turn[turn_map[tid]].append(ms)
+    return {i: make_stats(by_turn[i], show_std) for i in range(n_turns)}
+
+
 def assign_turns(spans: list[dict], n_turns: int) -> dict[str, int]:
     """Map each chatcmpl- trace_id to a turn index (0-based).
 
@@ -315,9 +365,10 @@ def gather_metrics(vllm_spans: list[dict], kb_spans: list[dict],
             return
         rows.append({"label": label, "real": rv, "emul": ev})
 
-    # Prefill — OTLP clean GPU compute (vLLM), roofline (kvbench)
-    add("Prefill",
-        per_request(vllm_spans, "prefill", show_std),
+    # Prefill — vLLM: OTLP prefill minus the request's own kv.lookup / kv.load_init /
+    # kv.store (they run inside that window); kvbench: prefill.compute is compute only
+    add("Prefill (KV I/O excluded)",
+        make_stats(list(prefill_excl_kv_io(vllm_spans).values()), show_std),
         kb("prefill"))
 
     # Decode per step
@@ -531,7 +582,10 @@ def build(vllm_dir: Path, kb_dir: Path, out: Path, show_std: bool,
             "<font color='#a93226'>Red</font> = kvbench under-predicts (optimistic).  "
             "No colour = within ±5%.  "
             "gpu.copy_in / gpu.copy_out filtered to real request spans only — "
-            "no-op per-decode-step calls excluded.",
+            "no-op per-decode-step calls excluded.  "
+            "vLLM Prefill = OTLP prefill minus the same request's kv.lookup, kv.load_init "
+            "and kv.store (kv.store stays in for older traces where it still contains the "
+            "GPU wait); kvbench Prefill = prefill.compute.",
             S["note"]),
         PageBreak(),
     ]
@@ -570,10 +624,10 @@ def build(vllm_dir: Path, kb_dir: Path, out: Path, show_std: bool,
             kb_turns   = assign_turns(kb_spans,   n_turns)
 
             # Per-turn prefill table
-            story.append(Paragraph("<b>Prefill</b>", S["note"]))
+            story.append(Paragraph("<b>Prefill</b>  (vLLM: KV I/O excluded)", S["note"]))
             story.append(build_turn_table(
                 "Prefill",
-                per_request_by_turn(vllm_spans, "prefill", show_std, vllm_turns, n_turns),
+                prefill_excl_kv_io_by_turn(vllm_spans, show_std, vllm_turns, n_turns),
                 per_request_by_turn(kb_spans,   "prefill", show_std, kb_turns,   n_turns),
                 n_turns, show_std))
             story.append(Spacer(1, 8))
