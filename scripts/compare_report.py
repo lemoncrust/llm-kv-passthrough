@@ -438,10 +438,10 @@ def gather_metrics(vllm_spans: list[dict], kb_spans: list[dict],
         per_request(vllm_spans, "kv.store",  show_std),
         kb("kv.store"))
 
-    # gpu.copy_out — directly below kv.store (true GPU→CPU DMA per chunk)
+    # gpu.copy_out — directly below kv.store (GPU→CPU DMA, summed over the request's chunks)
     add("gpu.copy_out",
-        per_span(vllm_spans, "gpu.copy_out", show_std, only_real=True),
-        kb_span("gpu.copy_out"))
+        per_request(vllm_spans, "gpu.copy_out", show_std, only_real=True),
+        kb("gpu.copy_out"))
 
     # gpu.alloc — only kvbench (vLLM pre-allocates at startup)
     add("gpu.alloc  (emul only)",
