@@ -17,9 +17,16 @@ Spans emitted, with real (not emulated) durations:
   (worker, installed once LMCache has created its storage backends)
 - ``kv.lookup``: time in the prefix-hit lookup (scheduler)
 - ``gpu.copy_in`` / ``gpu.copy_out``: time vLLM waits on KV load / save (worker)
-- ``kv.store``: a ``wait_for_save`` step that stores new chunks, with
-  ``tokens``/``skip_leading``/``chunks`` attrs; ``gpu.copy_out`` nests inside
-  it. Steps with nothing to store emit only ``gpu.copy_out``.
+- ``gpu.forward_wait``: time the CPU is blocked waiting for the GPU to finish
+  the forward pass before this step's KV can be saved (worker; emitted only
+  for steps that store). It is the GPU's compute time showing up inside
+  ``wait_for_save`` and is NOT LMCache work; see
+  ``TracingLMCacheConnector.wait_for_save`` for the full explanation.
+- ``kv.store``: the LMCache save of new chunks (GPU->host copies plus the
+  hand-off to the disk backend), with ``tokens``/``skip_leading``/``chunks``
+  attrs; ``gpu.copy_out`` nests inside it. It starts only after
+  ``gpu.forward_wait`` ends, so it excludes the forward-pass wait.
+  Steps with nothing to store emit ``kv.store_noop`` and no ``gpu.forward_wait``.
 """
 
 from __future__ import annotations
@@ -182,6 +189,76 @@ class TracingLMCacheConnector(LMCacheConnectorV1):
             self._gpu_copy_in_dur = 0.0
 
     def wait_for_save(self) -> None:
+        """Save this step's new KV chunks, timing the GPU wait and the save separately.
+
+        Spans for a step that stores (all share the request's ``chatcmpl-`` trace id)::
+
+            gpu.forward_wait   CPU blocked until the GPU drains its queue   (~55 ms)
+            kv.store           LMCache's save, starting after the wait      (~2-3 ms)
+              gpu.copy_out     one per 256-token chunk, GPU -> pinned host buffer
+
+        Steps with nothing to store (e.g. decode steps) emit only ``kv.store_noop``
+        and get no extra synchronization.
+
+        Why ``gpu.forward_wait`` exists
+        -------------------------------
+        The CPU does not run the model. ``execute_model`` only *queues* the forward-pass
+        kernels on the worker's CUDA stream (a FIFO queue the GPU drains in order) and
+        returns while the GPU is still computing. vLLM then calls this method from
+        ``ActiveKVConnector.post_forward`` (``vllm/v1/worker/gpu/kv_connector.py``),
+        invoked by ``sample_tokens``, i.e. with the forward pass, and the sampling
+        kernels queued after it, typically still running.
+
+        The first GPU-touching line of LMCache's save path
+        (``LMCacheConnectorV1Impl.wait_for_save`` in ``vllm_v1_adapter.py``) is
+        ``slot_mapping = slot_mapping.to(self.device)``. That copy is queued behind the
+        forward pass on the same stream and, being a default ``non_blocking=False``
+        copy, makes the CPU wait until it completes. So the CPU sits there until the
+        whole queue ahead of it has drained, about 55 ms for a 2048-token prompt on
+        Llama-3.2-1B / GB10. Only then do LMCache's copy-out kernels run.
+
+        Without this span, that wait is charged to ``kv.store``: ~59 ms, of which only
+        ~2-3 ms is storage work. That is misleading in two ways:
+
+        - it looks like LMCache is slow, when the time is the model computing;
+        - ``kvbench serve`` has no real GPU (``prefill.compute`` is a sleep that ends
+          before ``kv.store`` opens), so its ``kv.store`` contains no such wait and the
+          two spans would not measure the same thing.
+
+        We therefore block on the stream ourselves, in its own span, and open
+        ``kv.store`` afterwards so it covers only the save: seven GPU -> host copies of
+        8 MiB plus the hand-off to the disk backend. The disk writes (``io.write``)
+        are asynchronous and belong to neither span.
+
+        How to read ``gpu.forward_wait``
+        --------------------------------
+        - It is the GPU time *remaining* when the CPU arrives, not the full forward
+          time: some of it already ran while the CPU was loading KV and launching
+          kernels. It also includes the sampling kernels queued before this call.
+        - It is not I/O and not LMCache overhead.
+        - Compare it with kvbench's ``prefill.compute``, never with its ``kv.store``.
+          Real ``kv.store`` pairs with kvbench ``kv.store``.
+
+        Why ``current_stream()`` and what it changes
+        --------------------------------------------
+        The forward pass runs on the thread's current stream, so that is the one to
+        drain. ``torch.cuda.synchronize()`` would also wait for unrelated streams, and
+        LMCache's own ``store_stream`` must not be waited on: its copies belong inside
+        ``kv.store``.
+
+        The explicit call moves the wait rather than adding one: LMCache's ``.to()``
+        would block on the same stream a moment later, and ``from_gpu`` never makes
+        ``store_stream`` wait for the compute stream, so that CPU-side block is what
+        orders the copy-out kernels after the forward pass. Measured: ``kv.store``
+        without this call 59.1 ms; with it, ``gpu.forward_wait`` 54.0 ms plus
+        ``kv.store`` 2.7 ms (10 requests each; same totals within noise). It is still
+        an added call in the real code path. To observe passively, delete the
+        ``gpu.forward_wait`` block and read the wait as the gap from the start of
+        ``kv.store`` to its first ``gpu.copy_out``.
+
+        Evidence that the blocking call is that ``.to()`` (PyTorch sync-debug stacks,
+        10 of 10 requests) is kept in ``traces/proof_gpu_sync/``.
+        """
         self._ensure_hooks()
         meta = self._get_connector_metadata()
         chunk_size = getattr(self._lmcache_engine, "_lmcache_chunk_size", 256)
@@ -198,15 +275,17 @@ class TracingLMCacheConnector(LMCacheConnectorV1):
             saving_ids = [_trace_id(r.req_id) for r in meta.requests]
         tid = saving_ids[0] if len(saving_ids) == 1 else None
 
-        # kv.store wraps the full wait_for_save() pipeline:
-        #   GPU→CPU DMA (from_gpu, measured by gpu_connector hook) +
-        #   LMCache bookkeeping + buffer-wait + disk-write submission.
-        # gpu.copy_out is now emitted by the gpu_connector.from_gpu() hook
-        # so it is not repeated here — just emit kv.store for the total.
+        # kv.store covers LMCache's save: GPU→CPU copies (gpu.copy_out, emitted by the
+        # gpu_connector.from_gpu() hook) + bookkeeping + disk-write submission.
         if plan is None:
             with spans.root("kv.store_noop", trace_id=tid):
                 super().wait_for_save()
             return
+        import torch
+
+        # See the docstring: drain the compute stream here so kv.store excludes the wait.
+        with spans.root("gpu.forward_wait", trace_id=tid):
+            torch.cuda.current_stream().synchronize()
         with spans.root("kv.store", trace_id=tid, **plan):
             super().wait_for_save()
 
