@@ -65,6 +65,15 @@ S = {
 }
 
 # ── Data loading ──────────────────────────────────────────────────────────────
+def vllm_trace_files(case_dir: Path) -> list[Path]:
+    """JSONL files holding real-vLLM spans for one case directory.
+
+    A kvbench run can write into the same directory, so its trace is excluded;
+    otherwise its spans are averaged into the "real" column.
+    """
+    return [p for p in sorted(case_dir.glob("*.jsonl")) if p.name != "kvbench-trace.jsonl"]
+
+
 def load_and_merge(paths: list[Path]) -> list[dict]:
     """Load all JSONL files, apply name aliases, sort by ts."""
     spans = []
@@ -670,7 +679,7 @@ def build(vllm_dir: Path, kb_dir: Path, out: Path, show_std: bool,
             continue
 
         # Merge vLLM files (request-trace + kv-trace) on shared chatcmpl- trace_ids
-        vllm_files = sorted(vd.glob("*.jsonl"))
+        vllm_files = vllm_trace_files(vd)
         kb_files   = sorted(kd.glob("kvbench-trace.jsonl"))
 
         vllm_spans = load_and_merge(vllm_files)
