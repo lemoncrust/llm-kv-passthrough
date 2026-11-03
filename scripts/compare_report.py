@@ -597,7 +597,7 @@ CASES = [
     {"tag": "seq_10",     "label": "Sequential — 10 requests  (concurrency=1)",
      "multiturn": False, "n_turns": 5,
      "note": "10 requests · 2048 total input (256 shared prefix + 1792 unique) · 64 output · "
-             "concurrency=1 · prefix caching OFF · gpu.forward_wait separated from kv.store"},
+             "concurrency=1 · prefix caching OFF"},
     {"tag": "seq_100",    "label": "Sequential — 100 requests  (concurrency=1)",
      "multiturn": False, "n_turns": 5,
      "note": "100 requests · 2048 total input (256 shared prefix + 1792 unique) · 64 output · "
