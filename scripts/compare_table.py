@@ -7,11 +7,14 @@ numbers match the PDF, but writes to the terminal instead of building a report.
 Needs the same Python environment as compare_report.py (it imports reportlab).
 
 Usage:
-    python scripts/compare_table.py --vllm-dir DIR --kvbench-dir DIR
-    python scripts/compare_table.py --vllm-dir DIR --kvbench-dir DIR --cases seq_10,seq_100
+    python scripts/compare_table.py RUN_DIR
+    python scripts/compare_table.py RUN_DIR --cases seq_10,seq_100
 
-DIR holds one sub-directory per case (seq_10, seq_100, ...). The two DIRs may
-be the same directory.
+RUN_DIR is a whole run directory. Every sub-directory with traces (seq_100,
+conc_5, mt_10c_5t, ...) is shown, so only the cases that were run appear. In
+each one, vLLM spans come from the vllm-*.jsonl files and kvbench spans from
+kvbench-trace.jsonl. If the kvbench traces live in a different run directory,
+pass it with --kvbench-dir.
 """
 from __future__ import annotations
 
@@ -58,34 +61,42 @@ def render(rows: list[list[str]]) -> str:
     return "\n".join(lines)
 
 
+def case_tags(run_dir: Path, kb_dir: Path) -> list[str]:
+    """Case sub-directories that hold traces, known cases first in report order."""
+    found = set()
+    for base in {run_dir, kb_dir}:
+        found |= {p.name for p in base.iterdir() if p.is_dir() and any(p.glob("*.jsonl"))}
+    known = [c["tag"] for c in cr.CASES if c["tag"] in found]
+    return known + sorted(found - set(known))
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--vllm-dir", required=True, help="traces dir with the real vLLM runs")
-    ap.add_argument("--kvbench-dir", required=True, help="traces dir with the kvbench runs")
+    ap.add_argument("run_dir", help="run directory containing one sub-directory per case")
+    ap.add_argument("--kvbench-dir", default=None,
+                    help="run directory holding the kvbench traces (default: RUN_DIR)")
     ap.add_argument("--cases", default=None,
-                    help="comma-separated case tags (default: every case found)")
+                    help="comma-separated case tags to show (default: every case found)")
     args = ap.parse_args()
 
-    vllm_dir = Path(args.vllm_dir).expanduser()
-    kb_dir = Path(args.kvbench_dir).expanduser()
+    run_dir = Path(args.run_dir).expanduser()
+    kb_dir = Path(args.kvbench_dir).expanduser() if args.kvbench_dir else run_dir
+    for d in {run_dir, kb_dir}:
+        if not d.is_dir():
+            ap.error(f"not a directory: {d}")
     wanted = set(args.cases.split(",")) if args.cases else None
+    labels = {c["tag"]: c["label"] for c in cr.CASES}
 
     shown = 0
-    for case in cr.CASES:
-        tag = case["tag"]
+    for tag in case_tags(run_dir, kb_dir):
         if wanted is not None and tag not in wanted:
             continue
-        vd, kd = vllm_dir / tag, kb_dir / tag
-        if not vd.exists() or not kd.exists():
-            if wanted is not None:
-                print(f"== {tag}: directory missing ({vd} / {kd})\n")
-            continue
+        vd, kd = run_dir / tag, kb_dir / tag
+        vllm_spans = cr.load_and_merge(cr.vllm_trace_files(vd) if vd.is_dir() else [])
+        kb_spans = cr.load_and_merge(sorted(kd.glob("kvbench-trace.jsonl")) if kd.is_dir() else [])
+        rows = cr.gather_metrics(vllm_spans, kb_spans, tag.startswith("mt_"), False)
 
-        vllm_spans = cr.load_and_merge(cr.vllm_trace_files(vd))
-        kb_spans = cr.load_and_merge(sorted(kd.glob("kvbench-trace.jsonl")))
-        rows = cr.gather_metrics(vllm_spans, kb_spans, case["multiturn"], False)
-
-        print(f"== {tag}: {case['label']}")
+        print(f"== {tag}: {labels.get(tag, tag)}")
         if not rows:
             print("   (no data)\n")
             continue
@@ -93,11 +104,14 @@ def main() -> None:
         print()
         shown += 1
 
+    if wanted is not None:
+        for tag in sorted(wanted - set(case_tags(run_dir, kb_dir))):
+            print(f"== {tag}: no traces under {run_dir}")
     if shown:
         print("Δ = (kvbench - vLLM) / vLLM. gpu spans are limited to real requests. "
               "Multi-turn cases are shown flat (all turns together).")
     elif wanted is None:
-        print("No case directories found under the given paths.")
+        print(f"No case directories with traces found under {run_dir}.")
 
 
 if __name__ == "__main__":
