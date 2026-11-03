@@ -436,7 +436,7 @@ def gather_metrics(vllm_spans: list[dict], kb_spans: list[dict],
     # kv.store — full wait_for_save pipeline
     add("kv.store",
         per_request(vllm_spans, "kv.store",  show_std),
-        kb("rank.store"))
+        kb("kv.store"))
 
     # gpu.copy_out — directly below kv.store (true GPU→CPU DMA per chunk)
     add("gpu.copy_out",
@@ -475,7 +475,7 @@ def gather_metrics(vllm_spans: list[dict], kb_spans: list[dict],
     if per_chunk:
         add("kv.store / chunk",
             per_chunk_request(vllm_spans, "kv.store",   show_std),
-            per_chunk_request(kb_spans, "rank.store", show_std))
+            per_chunk_request(kb_spans, "kv.store", show_std))
         add("gpu.copy_out / chunk",
             per_chunk_request(vllm_spans, "gpu.copy_out", show_std,
                               only_real=True, io_op="io.write"),
@@ -721,7 +721,7 @@ def build(vllm_dir: Path, kb_dir: Path, out: Path, show_std: bool,
             # and cannot be grouped per-turn; they appear in the flat table.
             for op_label, op_name_v, op_name_k, required_both in [
                 ("kv.lookup",          "kv.lookup",    "kv.lookup",    False),
-                ("kv.store / chunk",   "kv.store",     "rank.store",   False),
+                ("kv.store / chunk",   "kv.store",     "kv.store",     False),
                 ("gpu.copy_out / chunk","gpu.copy_out", "gpu.copy_out", False),
                 ("io.read  / chunk",   "io.read",      "io.read",      True),
                 ("gpu.copy_in / chunk","gpu.copy_in",  "gpu.copy_in",  True),
