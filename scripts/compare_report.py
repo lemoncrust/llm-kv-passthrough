@@ -433,12 +433,6 @@ def gather_metrics(vllm_spans: list[dict], kb_spans: list[dict],
         per_request(vllm_spans, "kv.lookup", show_std),
         kb("kv.lookup"))
 
-    # gpu.forward_wait — CPU blocked on the GPU forward pass; vLLM only
-    # (kvbench's prefill.compute is a sleep that ends before kv.store opens)
-    add("gpu.forward_wait  (real only)",
-        per_request(vllm_spans, "gpu.forward_wait", show_std),
-        None)
-
     # kv.store — full wait_for_save pipeline
     add("kv.store",
         per_request(vllm_spans, "kv.store",  show_std),
