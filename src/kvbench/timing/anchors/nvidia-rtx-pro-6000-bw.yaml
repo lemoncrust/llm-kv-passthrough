@@ -7,31 +7,33 @@
 # Power: configured at 450 W (datasheet max 600 W).
 # PCIe Gen5 x16.
 #
-# Measurement conditions
-# ----------------------
-# Run: vLLM v0.28.1rc1, enforce-eager (no CUDAGraph), no prefix caching,
-#      no KV connector, no LMCache, no OTLP tracing — plain vLLM only.
+# Measurement conditions (current anchor — CUDAGraph / no enforce-eager)
+# -----------------------------------------------------------------------
+# Run: vLLM v0.28.1rc1, CUDAGraph mode (default, no --enforce-eager),
+#      no prefix caching, no KV connector, no LMCache, no OTLP tracing.
 #      CUDA_VISIBLE_DEVICES=0, concurrency=1, 12 requests.
 # ISL: 2047 tokens (aiperf adds one system-message token; effectively 2048).
 # OSL: 64 tokens.
 #
-# ttft_ms: p50 across all 12 requests = 21.3 ms. Distribution is tight
-#   (p90=22.3 ms) except req 0 (JIT, 74.8 ms). Warm mean ≈ 21.4 ms.
-#   This is pure GPU compute: no KV connector, no LMCache, no tracing.
-#   Previous measurement (35 ms) was inflated by kv.load_init (~4 ms) and
-#   kv.store (~9 ms) from LMCache running alongside.
-# tpot_ms: p50=3.31 ms, avg=3.32 ms, std=0.04 ms — extremely stable
-#   across all 12 requests.
+# ttft_ms: p50 = 22.05 ms. Prefill is compute-bound at this ISL so CUDA
+#   graphs provide no meaningful speedup vs enforce-eager (21.3 ms).
+#   min=20.75 ms, avg=23.32 ms across 12 requests.
+# tpot_ms: p50 = 2.34 ms, avg = 2.33 ms. CUDAGraph replay eliminates
+#   per-step kernel-launch overhead; 29% faster than enforce-eager (3.31 ms).
+#
+# Previous anchor (enforce-eager): ttft_ms=21.3, tpot_ms=3.31
+#   citation: "aiperf 12-req run 2026-11-03, enforce-eager, 450W cap"
 
 - model: llama-3.2-1b
   gpu: RTX_PRO_6000_BW
   isl: 2048
   osl: 64
-  ttft_ms: 21.3
-  tpot_ms: 3.31
+  ttft_ms: 22.05
+  tpot_ms: 2.34
   source: experiment
-  citation: "aiperf 12-req run 2026-11-03, plain vLLM 0.28.1rc1, enforce-eager, 450W cap, no LMCache"
+  citation: "aiperf 12-req run 2026-11-06, plain vLLM 0.28.1rc1, CUDAGraph (no enforce-eager), 450W cap, no LMCache"
   notes: >
     Pure GPU compute, no KV connector overhead. p50 of 12 requests;
-    JIT warmup (req 0, 74.8 ms) included in the percentile but not
-    material at p50. Warm steady-state range 21.0–22.3 ms.
+    min=20.75ms, avg=23.32ms. CUDAGraph mode: same TTFT as enforce-eager
+    (prefill is compute-bound at ISL=2048) but 29% faster TPOT
+    (2.34ms vs 3.31ms) due to eliminated per-decode-step launch overhead.
