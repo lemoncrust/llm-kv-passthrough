@@ -4,29 +4,29 @@ Distributed mock LLM serving system for benchmarking KV cache management without
 
 ## Features
 
-- **Real LMCache integration** — all KV cache operations go through the
+- **Real LMCache integration** - all KV cache operations go through the
   actual LMCache engine (CPU-only, no GPU required); LMCache owns chunking,
   hashing, tiering, eviction, and every byte of storage I/O
-- **Storage configured through LMCache's own application config** — CPU RAM,
+- **Storage configured through LMCache's own application config** - CPU RAM,
   local disk, and remote backends (Redis, Mooncake, ...) via LMCache's
   config file or `LMCACHE_*` environment variables
-- **Steady-state warmup** — one command fills every cache tier past capacity
+- **Steady-state warmup** - one command fills every cache tier past capacity
   so benchmarks measure the eviction-active steady state, not an empty cache
-- **Prometheus metrics** at `/metrics` — KV operations, token hit rate, live
+- **Prometheus metrics** at `/metrics` - KV operations, token hit rate, live
   tier usage, warmup progress, request latency and TTFT histograms
-- **KV I/O tracing → FIO** — record every logical and physical storage
+- **KV I/O tracing → FIO** - record every logical and physical storage
   operation LMCache performs, then `kvbench trace2fio` derives an FIO job
   file reproducing the workload (chunk sizes, read/write mix, writer
   parallelism, eviction churn)
-- **Incompressible KV data** — mock KV tensors are filled with random bytes
+- **Incompressible KV data** - mock KV tensors are filled with random bytes
   so storage systems with compression/dedup see realistic entropy
 - **Disaggregated prefill/decode** architecture emulation
-- **OpenAI-compatible API** — benchmark with NVIDIA AIPerf/GenAI-Perf or any
+- **OpenAI-compatible API** - benchmark with NVIDIA AIPerf/GenAI-Perf or any
   OpenAI-style load generator
 - **GPU timing emulation** based on real hardware specs (roofline model)
 
 Planned future work: NVIDIA Dynamo **KVBM** as a second KV stack (blocked on
-a CPU device mode in upstream kvbm — its data plane requires the CUDA driver
+a CPU device mode in upstream kvbm - its data plane requires the CUDA driver
 at initialization; see `docs/architecture/connectors.md`).
 
 ## Installation
@@ -75,7 +75,7 @@ kvbench serve --model llama-3.1-70b --gpu H200_SXM --tp-size 4
 
 `--tp-size N` emulates an N-GPU tensor-parallel server: one real LMCache
 engine per rank (world_size=N, worker_id=0..N-1), each storing its KV shard,
-so a logical chunk becomes N files on storage — the same I/O pattern a real
+so a logical chunk becomes N files on storage - the same I/O pattern a real
 multi-GPU node produces. KV heads replicate when N exceeds the model's
 kv_heads, exactly as vLLM does.
 
@@ -83,7 +83,7 @@ kv_heads, exactly as vLLM does.
 `H200_SXM`, `B200_SXM`, `B300_SXM`, `A100_SXM`/`A100_PCIe`, `L4`, `L40S`,
 and AMD `MI355X_OAM`.
 
-**Future systems** (projected — best public roadmap estimates, Sept 2026;
+**Future systems** (projected - best public roadmap estimates, Sept 2026;
 BF16 derived as FP8-dense/2, one "GPU" = one package):
 
 | Profile | System | HBM | BW | BF16 dense |
@@ -93,18 +93,18 @@ BF16 derived as FP8-dense/2, one "GPU" = one package):
 | `MI455X_HELIOS` | AMD Helios rack, MI455X (H2 2026) | 432 GB HBM4 | 23.3 TB/s | ~10 PF |
 
 Projected profiles carry "(projected)" in their names; treat their absolute
-latencies as scenario estimates, not predictions — the KV storage volumes
+latencies as scenario estimates, not predictions - the KV storage volumes
 they drive are exact for the chosen model.
 
 **Model profiles** cover Llama 3.1 (8B/70B/405B), Llama 3.2 (1B/3B),
 **Llama 4 Scout** (MoE, 192 KiB KV/token, 10M context), Qwen 2.5 (7B/72B),
-**Qwen3.8-27B** (hybrid attention — only 16 of 64 layers hold per-token KV:
+**Qwen3.8-27B** (hybrid attention - only 16 of 64 layers hold per-token KV:
 64 KiB/token), **DeepSeek V3.2** (MLA compressed cache: 68.6 KiB/token),
 Mistral 7B, Mixtral 8x7B. Adding a model is a ~10-line `ModelProfile` entry
 in `src/kvbench/core/models.py` from the model's `config.json` (hybrid
 attention via `kv_layers`, non-standard head sizes via `head_dim_override`).
 
-Example — a 70B on an 8x Rubin node with a big NVMe cache:
+Example - a 70B on an 8x Rubin node with a big NVMe cache:
 
 ```bash
 kvbench serve --model llama-3.1-70b --gpu RUBIN_VR200 --tp-size 8 \
@@ -141,7 +141,7 @@ kvbench warmup --url http://localhost:8000 --fill-factor 1.25
 
 # 4. Derive an FIO job file that reproduces the disk workload LMCache
 #    generated: chunk file size, read/write mix, concurrent writers,
-#    eviction churn — reviewable, commented, hand-tunable
+#    eviction churn - reviewable, commented, hand-tunable
 kvbench trace2fio /tmp/kv-trace.jsonl -o kv_workload.fio --directory /mnt/nvme/kvtest
 fio kv_workload.fio
 ```
@@ -205,7 +205,7 @@ kv:
 ```
 
 ```yaml
-# lmcache.yaml — LMCache application configuration
+# lmcache.yaml - LMCache application configuration
 chunk_size: 256
 local_cpu: true
 max_local_cpu_size: 4.0
@@ -246,8 +246,8 @@ TFLOPS values are dense (non-sparsity) tensor-core numbers for consistent cross-
 ## Storage
 
 KV-Bench never performs storage I/O itself. All KV cache operations go
-through the **real LMCache engine**, and storage — CPU-memory tier, local
-disk tier, remote backends — is selected and tuned entirely in LMCache's
+through the **real LMCache engine**, and storage - CPU-memory tier, local
+disk tier, remote backends - is selected and tuned entirely in LMCache's
 own application configuration (`--lmcache-config` file or `LMCACHE_*`
 environment variables). Anything LMCache supports as a backend, KV-Bench
 benchmarks; the storage under test sits under the KV management stack,
@@ -273,7 +273,7 @@ exactly as it does in a real vLLM + LMCache deployment.
                     └───────────┬───────────┘
                                 ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│              LMCache (real engine — KV management)              │
+│              LMCache (real engine - KV management)              │
 │        chunking · hashing · tiering · eviction · all I/O        │
 └─────────────────────────────────────────────────────────────────┘
                                 │
@@ -368,4 +368,4 @@ genai-perf \
 
 ## License
 
-BSD 3-Clause License — see [LICENSE](LICENSE).
+BSD 3-Clause License - see [LICENSE](LICENSE).

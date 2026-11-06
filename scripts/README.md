@@ -1,25 +1,29 @@
 # Benchmarking Scripts
 
-Two scripts for running a head-to-head comparison between a real vLLM server
-and a kvbench emulated server: a harness that drives both systems through
-identical workloads, and a report generator that turns the resulting traces
-into a PDF comparison.
+Three scripts for comparing a real vLLM server against a kvbench emulated server:
 
-## run_aiperf_harness.sh
+- `run_aiperf_harness.sh` runs both servers through identical workloads and collects traces
+- `compare_report.py` turns the traces into a PDF comparison report
+- `compare_table.py` prints the same numbers in the terminal without generating a PDF
 
-Runs vLLM and kvbench sequentially against the same aiperf workloads, then
-generates a comparison report from the collected traces.
+---
 
-### Requirements
+## Step 1: Collect traces with the harness
 
-- `HF_TOKEN` set in the environment (Hugging Face access token)
-- A vLLM virtual environment (default: `../vllm/.venv` relative to repo root,
-  or set `VLLM_VENV=/path/to/venv`)
-- `aiperf` binary (default: `.venv/bin/aiperf`, or set `AIPERF=/path/to/aiperf`)
-- An LMCache config file — use `examples/lmcache-local-disk.yaml` as a
-  starting point and adjust the disk path and tier sizes for your setup
+The harness starts vLLM, runs aiperf against it, then does the same with kvbench.
+Both servers use the same LMCache configuration so the storage layer is identical.
 
-### Usage
+### What you need before running
+
+| Requirement | How to provide |
+|---|---|
+| Hugging Face token | `export HF_TOKEN=<token>` |
+| LMCache config file | Pass with `--lmcache-config`. Use `examples/lmcache-local-disk.yaml` as a starting point. |
+| Cache directory | Pass with `--lmcache-cache`. Point it at a fast local disk. |
+| vLLM virtual environment | Default: `../vllm/.venv`. Override with `VLLM_VENV=/path/to/venv`. |
+| aiperf binary | Default: `.venv/bin/aiperf`. Override with `AIPERF=/path/to/aiperf`. |
+
+### Basic usage
 
 ```bash
 export HF_TOKEN=<token>
@@ -27,22 +31,22 @@ export HF_TOKEN=<token>
 bash scripts/run_aiperf_harness.sh \
     --lmcache-config examples/lmcache-local-disk.yaml \
     --lmcache-cache  /tmp/lmcache-cache \
-    [OPTIONS] [OUTPUT_DIR]
+    /path/to/output
 ```
 
-If `OUTPUT_DIR` is omitted the script creates `traces/aiperf_run_<timestamp>/`.
+If you omit the output directory the script creates `traces/aiperf_run_<timestamp>/`.
 
-### Options
+### All options
 
 | Option | Default | Description |
 |---|---|---|
-| `--cases CASE[,...]` | all | Cases to run: `seq_100` `seq_1000` `conc_5` `conc_10` `mt_10c_5t` `mt_50c_5t` |
-| `--phase vllm\|kvbench\|both` | both | Which system(s) to run |
-| `--gpu PROFILE` | RTX\_PRO\_6000\_BW | kvbench GPU profile for calibration |
-| `--hardware LABEL` | RTX PRO 6000 Blackwell (GPU 0) | Hardware label in the PDF |
-| `--model-name LABEL` | meta-llama/Llama-3.2-1B-Instruct | Model label in the PDF |
-| `--lmcache-config FILE` | required | LMCache config file (see `examples/lmcache-local-disk.yaml`) |
+| `--lmcache-config FILE` | required | LMCache config file |
 | `--lmcache-cache DIR` | required | Directory where LMCache writes chunk files |
+| `--cases CASE[,...]` | all | Cases to run. Available: `seq_100` `seq_1000` `conc_5` `conc_10` `mt_10c_5t` `mt_50c_5t` |
+| `--phase vllm/kvbench/both` | both | Run only vLLM, only kvbench, or both |
+| `--gpu PROFILE` | RTX\_PRO\_6000\_BW | kvbench GPU profile used for timing calibration |
+| `--hardware LABEL` | RTX PRO 6000 Blackwell (GPU 0) | Hardware label shown in the PDF |
+| `--model-name LABEL` | meta-llama/Llama-3.2-1B-Instruct | Model label shown in the PDF |
 | `--gpu-util FLOAT` | 0.9 | vLLM `--gpu-memory-utilization` |
 
 ### Examples
@@ -54,11 +58,12 @@ bash scripts/run_aiperf_harness.sh \
     --lmcache-cache  /tmp/lmcache-cache \
     --cases          seq_100,seq_1000
 
-# kvbench phase only (vLLM traces already collected)
+# Run only the kvbench phase against vLLM traces you already collected
 bash scripts/run_aiperf_harness.sh \
     --lmcache-config examples/lmcache-local-disk.yaml \
     --lmcache-cache  /tmp/lmcache-cache \
-    --phase kvbench /path/to/existing/traces
+    --phase kvbench \
+    /path/to/existing/traces
 
 # Different hardware
 bash scripts/run_aiperf_harness.sh \
@@ -78,19 +83,20 @@ OUTPUT_DIR/
     vllm-request-trace.jsonl     OTLP request spans
     kvbench-trace.jsonl          emulated server spans
     aiperf/                      aiperf artifacts
-  seq_1000/   ...
+  seq_1000/
+    ...
   comparison_<gpu_profile>.pdf   generated report
 ```
 
-The report filename is derived from the GPU profile:
+The report filename is derived from the GPU profile. For example,
 `RTX_PRO_6000_BW` produces `comparison_rtx_pro_6000_bw.pdf`.
 
-## compare_report.py
+---
 
-Generates the PDF report from two trace directories. Can be run standalone
-against any existing traces without re-running the servers.
+## Step 2: Generate a PDF report
 
-### Usage
+The harness generates the report automatically at the end. If you want to
+regenerate it from existing traces, run compare_report.py directly.
 
 ```bash
 python scripts/compare_report.py \
@@ -99,45 +105,74 @@ python scripts/compare_report.py \
     --output      report.pdf
 ```
 
-Both `--vllm-dir` and `--kvbench-dir` point to the same directory when the
-harness wrote both systems' traces together (the default setup).
+Both `--vllm-dir` and `--kvbench-dir` can point to the same directory when
+the harness wrote both systems' traces together, which is the default.
 
 ### Options
 
 | Option | Description |
 |---|---|
-| `--cases CASE[,...]` | Subset of cases to include in the report |
-| `--output FILE` | Output PDF path (default: `comparison_<timestamp>.pdf` in current dir) |
+| `--cases CASE[,...]` | Only include these cases in the report (default: all found) |
+| `--output FILE` | Output PDF path (default: `comparison_<timestamp>.pdf` in current directory) |
 | `--hardware LABEL` | Hardware string shown in the page header |
 | `--model-name LABEL` | Model string shown in the page header |
 | `--kvbench-gpu PROFILE` | GPU profile shown on the cover page |
 | `--no-stddev` | Omit standard deviation from mean cells |
-| `--name STEM` | Stem for the default output filename |
 
-### Examples
+### Example
 
 ```bash
-# Sequential cases only
+# Sequential cases only, with custom labels
 python scripts/compare_report.py \
     --vllm-dir    traces/aiperf_run_20261106 \
     --kvbench-dir traces/aiperf_run_20261106 \
     --output      seq_comparison.pdf \
-    --cases       seq_100,seq_1000
-
-# All cases with custom hardware label
-python scripts/compare_report.py \
-    --vllm-dir    traces/run_a \
-    --kvbench-dir traces/run_b \
-    --hardware    "NVIDIA H200 SXM" \
-    --kvbench-gpu H200_SXM \
-    --output      h200_comparison.pdf
+    --cases       seq_100,seq_1000 \
+    --hardware    "NVIDIA H100 SXM" \
+    --kvbench-gpu H100_SXM
 ```
 
-### Metrics in the report
+---
 
-Each table row is one metric, summed per request then averaged across all
-requests in that case. The three column groups show mean, p50, and p90 with
-Δ = (kvbench - vLLM) / vLLM.
+## Step 3: Inspect numbers in the terminal
+
+compare_table.py prints the same metrics as the PDF report but in plain text,
+which is useful for quick checks without generating a file.
+
+```bash
+python scripts/compare_table.py /path/to/traces
+```
+
+It automatically finds every case sub-directory that contains traces and
+shows them one after another.
+
+### Options
+
+| Option | Description |
+|---|---|
+| `--cases CASE[,...]` | Only show these cases |
+| `--kvbench-dir DIR` | Separate directory for kvbench traces (default: same as run dir) |
+
+### Examples
+
+```bash
+# Show all cases in a run directory
+python scripts/compare_table.py traces/aiperf_run_20261106
+
+# Show only sequential cases
+python scripts/compare_table.py traces/aiperf_run_20261106 --cases seq_100,seq_1000
+
+# vLLM and kvbench traces in separate directories
+python scripts/compare_table.py /path/to/vllm-traces \
+    --kvbench-dir /path/to/kvbench-traces
+```
+
+---
+
+## What the metrics mean
+
+Each row in the table or PDF is one metric, summed per request and then
+averaged across all requests in that case.
 
 | Metric | vLLM source | kvbench source |
 |---|---|---|
@@ -145,12 +180,12 @@ requests in that case. The three column groups show mean, p50, and p90 with
 | Decode per token | OTLP decode / completion\_tokens | `decode.step` spans |
 | kv.lookup | `kv.lookup` span | `kv.lookup` span |
 | kv.store | `kv.store` span | `kv.store` span |
-| gpu.copy\_out | `gpu.copy_out` spans summed | `gpu.copy_out` spans summed |
-| gpu.alloc | not present | `gpu.alloc` span (emulator artifact) |
-| io.write | `io.write` spans summed | `io.write` spans summed |
+| gpu.copy\_out | `gpu.copy_out` spans summed per request | `gpu.copy_out` spans summed |
+| gpu.alloc | not present in real vLLM | `gpu.alloc` span (emulator artifact) |
+| io.write | `io.write` spans summed per request | `io.write` spans summed |
 | kv.retrieve | `kv.load_init` span | `rank.retrieve` span |
 | gpu.copy\_in | `gpu.copy_in` span | `gpu.copy_in` span |
-| io.read | `io.read` spans summed | `io.read` spans summed |
+| io.read | `io.read` spans summed per request | `io.read` spans summed |
 
-Prefill on the vLLM side subtracts kv.load\_init and kv.store from the OTLP
-prefill window so that KV storage work is not charged to GPU compute.
+The delta column shows `(kvbench - vLLM) / vLLM`. Green means kvbench
+over-predicts. Red means kvbench under-predicts. No colour means within 5%.
