@@ -84,6 +84,9 @@ config.yml
 *.local.yaml
 *.local.yml
 
+# Local run directory (user-specific lmcache config and cache data)
+run/
+
 # OS
 .DS_Store
 Thumbs.db

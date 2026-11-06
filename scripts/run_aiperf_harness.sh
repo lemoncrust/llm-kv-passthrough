@@ -31,8 +31,6 @@ REPO_DIR="$(dirname "$SCRIPT_DIR")"
 KB_VENV="$REPO_DIR/.venv"
 VLLM_VENV="${VLLM_VENV:-$(dirname "$REPO_DIR")/vllm/.venv}"
 AIPERF="${AIPERF:-$KB_VENV/bin/aiperf}"
-LMCACHE_CFG="$REPO_DIR/run/lmcache.yaml"
-LMCACHE_CACHE="$REPO_DIR/run/lmcache-cache"
 MODEL="meta-llama/Llama-3.2-1B-Instruct"
 HF_TOKEN="${HF_TOKEN:?HF_TOKEN must be set in the environment}"
 PORT=8000
@@ -45,16 +43,20 @@ OPT_GPU_UTIL="0.9"
 OPT_OUT=""
 OPT_HARDWARE="NVIDIA RTX PRO 6000 Blackwell (GPU 0)"
 OPT_MODEL_NAME="meta-llama/Llama-3.2-1B-Instruct"
+OPT_LMCACHE_CFG=""
+OPT_LMCACHE_CACHE=""
 
 # ── Argument parsing ──────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --cases)      OPT_CASES="$2";      shift 2 ;;
-        --phase)      OPT_PHASE="$2";      shift 2 ;;
-        --gpu)        OPT_GPU="$2";        shift 2 ;;
-        --gpu-util)   OPT_GPU_UTIL="$2";   shift 2 ;;
-        --hardware)   OPT_HARDWARE="$2";   shift 2 ;;
-        --model-name) OPT_MODEL_NAME="$2"; shift 2 ;;
+        --cases)         OPT_CASES="$2";         shift 2 ;;
+        --phase)         OPT_PHASE="$2";          shift 2 ;;
+        --gpu)           OPT_GPU="$2";            shift 2 ;;
+        --gpu-util)      OPT_GPU_UTIL="$2";       shift 2 ;;
+        --hardware)      OPT_HARDWARE="$2";       shift 2 ;;
+        --model-name)    OPT_MODEL_NAME="$2";     shift 2 ;;
+        --lmcache-config) OPT_LMCACHE_CFG="$2";  shift 2 ;;
+        --lmcache-cache) OPT_LMCACHE_CACHE="$2"; shift 2 ;;
         --*)          echo "Unknown option: $1"; exit 1 ;;
         *)            OPT_OUT="$1";        shift ;;
     esac
@@ -73,7 +75,21 @@ SEQ_OUTPUT=64
 MT_INPUT=512
 MT_OUTPUT=64
 
-# ── Validate paths ────────────────────────────────────────────────────────────
+# ── Validate required args and paths ─────────────────────────────────────────
+if [[ -z "$OPT_LMCACHE_CFG" ]]; then
+    echo "ERROR: --lmcache-config is required"
+    echo "       Example: --lmcache-config examples/lmcache-local-disk.yaml"
+    exit 1
+fi
+if [[ ! -f "$OPT_LMCACHE_CFG" ]]; then
+    echo "ERROR: lmcache config not found: $OPT_LMCACHE_CFG"
+    exit 1
+fi
+if [[ -z "$OPT_LMCACHE_CACHE" ]]; then
+    echo "ERROR: --lmcache-cache is required"
+    echo "       Example: --lmcache-cache /tmp/lmcache-cache"
+    exit 1
+fi
 if [[ ! -f "$AIPERF" ]]; then
     echo "ERROR: aiperf not found at $AIPERF"
     echo "       Override with: AIPERF=/path/to/aiperf $0"
@@ -87,14 +103,16 @@ fi
 
 echo "══════════════════════════════════════════════════════════"
 echo "  aiperf harness"
-echo "  output:      $OUT"
-echo "  cases:       $OPT_CASES"
-echo "  phase:       $OPT_PHASE"
-echo "  kvbench gpu: $OPT_GPU"
-echo "  hardware:    $OPT_HARDWARE"
-echo "  model:       $OPT_MODEL_NAME"
-echo "  vllm venv:   $VLLM_VENV"
-echo "  aiperf:      $AIPERF"
+echo "  output:         $OUT"
+echo "  cases:          $OPT_CASES"
+echo "  phase:          $OPT_PHASE"
+echo "  kvbench gpu:    $OPT_GPU"
+echo "  hardware:       $OPT_HARDWARE"
+echo "  model:          $OPT_MODEL_NAME"
+echo "  lmcache config: $OPT_LMCACHE_CFG"
+echo "  lmcache cache:  $OPT_LMCACHE_CACHE"
+echo "  vllm venv:      $VLLM_VENV"
+echo "  aiperf:         $AIPERF"
 echo "══════════════════════════════════════════════════════════"
 
 # ── Process case filter ────────────────────────────────────────────────────────
@@ -146,7 +164,7 @@ stop_otlp() {
 }
 
 clean_lmcache() {
-    rm -rf "$LMCACHE_CACHE"; mkdir -p "$LMCACHE_CACHE"
+    rm -rf "$OPT_LMCACHE_CACHE"; mkdir -p "$OPT_LMCACHE_CACHE"
     echo "  lmcache cleared"
 }
 
@@ -221,7 +239,7 @@ if [[ "$OPT_PHASE" == "vllm" || "$OPT_PHASE" == "both" ]]; then
 
         CUDA_VISIBLE_DEVICES=0 \
         OTEL_EXPORTER_OTLP_TRACES_PROTOCOL=http/protobuf \
-        LMCACHE_CONFIG_FILE="$LMCACHE_CFG" \
+        LMCACHE_CONFIG_FILE="$OPT_LMCACHE_CFG" \
         HF_TOKEN="$HF_TOKEN" HUGGING_FACE_HUB_TOKEN="$HF_TOKEN" \
         VLLM_ENABLE_V1_MULTIPROCESSING=0 \
         PATH="$VLLM_VENV/bin:$PATH" \
@@ -264,7 +282,7 @@ if [[ "$OPT_PHASE" == "kvbench" || "$OPT_PHASE" == "both" ]]; then
 
         "$KB_VENV/bin/kvbench" serve \
             --calibrated-timing --gpu "$OPT_GPU" --model llama-3.2-1b \
-            --lmcache-config "$LMCACHE_CFG" \
+            --lmcache-config "$OPT_LMCACHE_CFG" \
             --trace-file "$CASE_DIR/kvbench-trace.jsonl" \
             --port "$PORT" --type combined \
             > "$CASE_DIR/kvbench.log" 2>&1 &

@@ -16,14 +16,18 @@ generates a comparison report from the collected traces.
 - A vLLM virtual environment (default: `../vllm/.venv` relative to repo root,
   or set `VLLM_VENV=/path/to/venv`)
 - `aiperf` binary (default: `.venv/bin/aiperf`, or set `AIPERF=/path/to/aiperf`)
-- An LMCache config file at `run/lmcache.yaml`
+- An LMCache config file — use `examples/lmcache-local-disk.yaml` as a
+  starting point and adjust the disk path and tier sizes for your setup
 
 ### Usage
 
 ```bash
 export HF_TOKEN=<token>
 
-bash scripts/run_aiperf_harness.sh [OPTIONS] [OUTPUT_DIR]
+bash scripts/run_aiperf_harness.sh \
+    --lmcache-config examples/lmcache-local-disk.yaml \
+    --lmcache-cache  /tmp/lmcache-cache \
+    [OPTIONS] [OUTPUT_DIR]
 ```
 
 If `OUTPUT_DIR` is omitted the script creates `traces/aiperf_run_<timestamp>/`.
@@ -37,19 +41,29 @@ If `OUTPUT_DIR` is omitted the script creates `traces/aiperf_run_<timestamp>/`.
 | `--gpu PROFILE` | RTX\_PRO\_6000\_BW | kvbench GPU profile for calibration |
 | `--hardware LABEL` | RTX PRO 6000 Blackwell (GPU 0) | Hardware label in the PDF |
 | `--model-name LABEL` | meta-llama/Llama-3.2-1B-Instruct | Model label in the PDF |
+| `--lmcache-config FILE` | required | LMCache config file (see `examples/lmcache-local-disk.yaml`) |
+| `--lmcache-cache DIR` | required | Directory where LMCache writes chunk files |
 | `--gpu-util FLOAT` | 0.9 | vLLM `--gpu-memory-utilization` |
 
 ### Examples
 
 ```bash
-# Run only sequential cases
-bash scripts/run_aiperf_harness.sh --cases seq_100,seq_1000
-
-# Run kvbench phase only against an existing vLLM trace directory
-bash scripts/run_aiperf_harness.sh --phase kvbench /path/to/existing/traces
-
-# Run on H100 hardware
+# Sequential cases only
 bash scripts/run_aiperf_harness.sh \
+    --lmcache-config examples/lmcache-local-disk.yaml \
+    --lmcache-cache  /tmp/lmcache-cache \
+    --cases          seq_100,seq_1000
+
+# kvbench phase only (vLLM traces already collected)
+bash scripts/run_aiperf_harness.sh \
+    --lmcache-config examples/lmcache-local-disk.yaml \
+    --lmcache-cache  /tmp/lmcache-cache \
+    --phase kvbench /path/to/existing/traces
+
+# Different hardware
+bash scripts/run_aiperf_harness.sh \
+    --lmcache-config /path/to/lmcache.yaml \
+    --lmcache-cache  /nvme/lmcache-cache \
     --gpu      H100_SXM \
     --hardware "NVIDIA H100 SXM" \
     --cases    seq_100,seq_1000,conc_5,conc_10
