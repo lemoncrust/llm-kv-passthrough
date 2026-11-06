@@ -1,4 +1,4 @@
-#!/home/admin/aditya/ai-perf/bin/python
+#!/usr/bin/env python3
 """
 compare_report.py — PDF comparison: real vLLM vs kvbench emulated.
 
@@ -7,10 +7,10 @@ columns = mean_real | mean_emul | Δ | p50_real | p50_emul | Δ | p90_real | p90
 
 Usage:
     python compare_report.py \\
-        --vllm-dir  ~/aditya/traces/vllm_run_YYYYMMDD \\
-        --kvbench-dir ~/aditya/traces/kvbench_run_YYYYMMDD \\
-        --output    ~/aditya/traces/comparison.pdf \\
-        [--no-stddev]
+        --vllm-dir    /path/to/traces \\
+        --kvbench-dir /path/to/traces \\
+        --output      report.pdf \\
+        [--cases seq_100,seq_1000] [--no-stddev]
 """
 from __future__ import annotations
 
@@ -44,8 +44,9 @@ PAGE_W, PAGE_H = landscape(A4)
 MARGIN  = 1.6 * cm
 AVAIL_W = PAGE_W - 2 * MARGIN
 
-MODEL    = "meta-llama/Llama-3.2-1B-Instruct"
-HARDWARE = "GB10 DGX Spark"
+_DEFAULT_MODEL    = "meta-llama/Llama-3.2-1B-Instruct"
+_DEFAULT_HARDWARE = "NVIDIA RTX PRO 6000 Blackwell (GPU 0)"
+_DEFAULT_KB_GPU   = "RTX_PRO_6000_BW"
 
 # Span name aliases
 ALIASES = {"prefill.compute": "prefill", "decode.step": "decode_step"}
@@ -497,22 +498,24 @@ def build_table(rows: list[dict], show_std: bool) -> Table:
 
 
 # ── Page decoration ───────────────────────────────────────────────────────────
-def on_page(canvas, doc):
-    canvas.saveState()
-    w, h = landscape(A4)
-    canvas.setFillColor(C_NAVY); canvas.rect(0, h-24, w, 24, fill=1, stroke=0)
-    canvas.setFillColor(C_WHITE); canvas.setFont("Helvetica-Bold", 9)
-    canvas.drawString(MARGIN, h-15, "Performance Comparison Report  ·  vLLM (real) vs kvbench (emulated)")
-    canvas.setFont("Helvetica", 8.5)
-    canvas.drawRightString(w-MARGIN, h-15, f"{HARDWARE}  ·  {MODEL}")
-    canvas.setFillColor(C_NAVY); canvas.rect(0,0,w,16,fill=1,stroke=0)
-    canvas.setFillColor(C_WHITE); canvas.setFont("Helvetica", 7)
-    canvas.drawString(MARGIN, 5,
-        "Δ = (kvbench − vLLM) / vLLM × 100%  ·  "
-        "Green Δ = kvbench over-predicts  ·  Red Δ = kvbench under-predicts  ·  "
-        "gpu spans filtered to real requests (chatcmpl- trace_id) only")
-    canvas.drawRightString(w-MARGIN, 5, f"Page {doc.page}")
-    canvas.restoreState()
+def _make_on_page(hardware: str, model_name: str):
+    def on_page(canvas, doc):
+        canvas.saveState()
+        w, h = landscape(A4)
+        canvas.setFillColor(C_NAVY); canvas.rect(0, h-24, w, 24, fill=1, stroke=0)
+        canvas.setFillColor(C_WHITE); canvas.setFont("Helvetica-Bold", 9)
+        canvas.drawString(MARGIN, h-15, "Performance Comparison Report  ·  vLLM (real) vs kvbench (emulated)")
+        canvas.setFont("Helvetica", 8.5)
+        canvas.drawRightString(w-MARGIN, h-15, f"{hardware}  ·  {model_name}")
+        canvas.setFillColor(C_NAVY); canvas.rect(0,0,w,16,fill=1,stroke=0)
+        canvas.setFillColor(C_WHITE); canvas.setFont("Helvetica", 7)
+        canvas.drawString(MARGIN, 5,
+            "Δ = (kvbench − vLLM) / vLLM × 100%  ·  "
+            "Green Δ = kvbench over-predicts  ·  Red Δ = kvbench under-predicts  ·  "
+            "gpu spans filtered to real requests (chatcmpl- trace_id) only")
+        canvas.drawRightString(w-MARGIN, 5, f"Page {doc.page}")
+        canvas.restoreState()
+    return on_page
 
 
 # ── Cases ─────────────────────────────────────────────────────────────────────
@@ -546,12 +549,22 @@ CASES = [
 # ── Build ─────────────────────────────────────────────────────────────────────
 def build(vllm_dir: Path, kb_dir: Path, out: Path, show_std: bool,
           vllm_mt_dir: Path | None = None, kb_mt_dir: Path | None = None,
-          vllm_conc_dir: Path | None = None, kb_conc_dir: Path | None = None) -> None:
-    """vllm_mt_dir / kb_mt_dir override for multi-turn; *_conc_dir for concurrency cases."""
+          vllm_conc_dir: Path | None = None, kb_conc_dir: Path | None = None,
+          hardware: str = _DEFAULT_HARDWARE,
+          model_name: str = _DEFAULT_MODEL,
+          kvbench_gpu: str = _DEFAULT_KB_GPU,
+          cases_filter: set[str] | None = None) -> None:
+    """Build the comparison PDF.
+
+    cases_filter: set of case tag strings to include; None means include all.
+    vllm_mt_dir / kb_mt_dir override trace directories for multi-turn cases.
+    vllm_conc_dir / kb_conc_dir override trace directories for concurrency cases.
+    """
     doc = SimpleDocTemplate(str(out), pagesize=landscape(A4),
                             leftMargin=MARGIN, rightMargin=MARGIN,
                             topMargin=MARGIN+22, bottomMargin=MARGIN+10)
     story = []
+    on_page = _make_on_page(hardware, model_name)
 
     # Cover
     story += [
@@ -561,12 +574,12 @@ def build(vllm_dir: Path, kb_dir: Path, out: Path, show_std: bool,
         Spacer(1, 0.3*cm),
     ]
     meta = [
-        [Paragraph("Hardware",     S["meta_k"]), Paragraph(HARDWARE, S["meta_v"])],
-        [Paragraph("Model",        S["meta_k"]), Paragraph(MODEL,    S["meta_v"])],
+        [Paragraph("Hardware",     S["meta_k"]), Paragraph(hardware,    S["meta_v"])],
+        [Paragraph("Model",        S["meta_k"]), Paragraph(model_name,  S["meta_v"])],
         [Paragraph("Date",         S["meta_k"]), Paragraph(datetime.now().strftime("%B %d, %Y"), S["meta_v"])],
         [Paragraph("vLLM mode",    S["meta_k"]), Paragraph("Single-process  (VLLM_ENABLE_V1_MULTIPROCESSING=0)  ·  prefix caching OFF", S["meta_v"])],
         [Paragraph("vLLM tracing", S["meta_k"]), Paragraph("OTLP request spans + TracingLMCacheConnector KV spans", S["meta_v"])],
-        [Paragraph("kvbench",      S["meta_k"]), Paragraph("Calibrated roofline  ·  GB10 profile  ·  same lmcache config", S["meta_v"])],
+        [Paragraph("kvbench",      S["meta_k"]), Paragraph(f"Calibrated roofline  ·  {kvbench_gpu} profile  ·  same lmcache config", S["meta_v"])],
     ]
     mt = Table(meta, colWidths=[3.8*cm, AVAIL_W-3.8*cm])
     mt.setStyle(TableStyle([
@@ -590,27 +603,29 @@ def build(vllm_dir: Path, kb_dir: Path, out: Path, show_std: bool,
         PageBreak(),
     ]
 
-    for i, case in enumerate(CASES, 1):
+    visible_num = 0
+    for case in CASES:
         tag = case["tag"]
-        # Use override dirs for multi-turn cases if provided
-        is_conc = case["tag"].startswith("conc_")
+        if cases_filter is not None and tag not in cases_filter:
+            continue
+        is_conc = tag.startswith("conc_")
         _vd = (vllm_conc_dir if (is_conc and vllm_conc_dir) else
                vllm_mt_dir   if (case["multiturn"] and vllm_mt_dir) else vllm_dir)
         _kd = (kb_conc_dir   if (is_conc and kb_conc_dir) else
                kb_mt_dir     if (case["multiturn"] and kb_mt_dir) else kb_dir)
-        vd  = _vd / tag
-        kd  = _kd / tag
+        vd = _vd / tag
+        kd = _kd / tag
         if not vd.exists() or not kd.exists():
             continue
 
-        # Merge vLLM files (request-trace + kv-trace) on shared chatcmpl- trace_ids
+        visible_num += 1
         vllm_files = vllm_trace_files(vd)
         kb_files   = sorted(kd.glob("kvbench-trace.jsonl"))
 
         vllm_spans = load_and_merge(vllm_files)
         kb_spans   = load_and_merge(kb_files)
 
-        story.append(Paragraph(f"{i}.  {case['label']}", S["h1"]))
+        story.append(Paragraph(f"{visible_num}.  {case['label']}", S["h1"]))
         story.append(Paragraph(case["note"], S["note"]))
 
         if not case["multiturn"]:
@@ -689,25 +704,40 @@ def main():
                     help="vLLM traces dir for concurrency cases")
     ap.add_argument("--kvbench-conc-dir", default=None,
                     help="kvbench traces dir for concurrency cases")
-    ap.add_argument("--output", "-o", default=None)
-    ap.add_argument("--no-stddev",  action="store_true", help="Omit ±σ from mean cells")
+    ap.add_argument("--output", "-o", default=None,
+                    help="Output PDF path (default: comparison_<timestamp>.pdf in current dir)")
+    ap.add_argument("--cases", default=None,
+                    help="Comma-separated case tags to include, e.g. seq_100,seq_1000. "
+                         "Available: seq_100 seq_1000 conc_5 conc_10 mt_10c_5t mt_50c_5t. "
+                         "Default: all cases whose directories exist.")
+    ap.add_argument("--no-stddev", action="store_true", help="Omit ±σ from mean cells")
     ap.add_argument("--name", "-n", default=None,
-                    help="Report name used in filename, e.g. odirect_1 → comparison_odirect_1.pdf")
+                    help="Stem used in the default output filename, "
+                         "e.g. rtx_seq → comparison_rtx_seq.pdf")
+    ap.add_argument("--hardware", "-H", default=_DEFAULT_HARDWARE,
+                    help="Hardware description shown in the report header and cover page")
+    ap.add_argument("--model-name", "-M", default=_DEFAULT_MODEL,
+                    help="Model name shown in the report header and cover page")
+    ap.add_argument("--kvbench-gpu", default=_DEFAULT_KB_GPU,
+                    help="kvbench GPU profile name shown on the cover page")
     args = ap.parse_args()
 
-    vllm_dir    = Path(args.vllm_dir).expanduser()
-    kb_dir      = Path(args.kvbench_dir).expanduser()
+    vllm_dir      = Path(args.vllm_dir).expanduser()
+    kb_dir        = Path(args.kvbench_dir).expanduser()
     vllm_mt_dir   = Path(args.vllm_mt_dir).expanduser()      if args.vllm_mt_dir      else None
     kb_mt_dir     = Path(args.kvbench_mt_dir).expanduser()   if args.kvbench_mt_dir   else None
     vllm_conc_dir = Path(args.vllm_conc_dir).expanduser()    if args.vllm_conc_dir    else None
     kb_conc_dir   = Path(args.kvbench_conc_dir).expanduser() if args.kvbench_conc_dir else None
-    suffix = args.name or datetime.now().strftime('%Y%m%d_%H%M%S')
+    cases_filter  = {t.strip() for t in args.cases.split(",")} if args.cases else None
+    suffix        = args.name or datetime.now().strftime("%Y%m%d_%H%M%S")
     out = Path(args.output).expanduser() if args.output else \
-          Path("~/aditya/traces").expanduser() / f"comparison_{suffix}.pdf"
+          Path(f"comparison_{suffix}.pdf")
 
     build(vllm_dir, kb_dir, out, show_std=not args.no_stddev,
           vllm_mt_dir=vllm_mt_dir, kb_mt_dir=kb_mt_dir,
-          vllm_conc_dir=vllm_conc_dir, kb_conc_dir=kb_conc_dir)
+          vllm_conc_dir=vllm_conc_dir, kb_conc_dir=kb_conc_dir,
+          hardware=args.hardware, model_name=args.model_name,
+          kvbench_gpu=args.kvbench_gpu, cases_filter=cases_filter)
 
 
 if __name__ == "__main__":

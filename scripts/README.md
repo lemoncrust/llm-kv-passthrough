@@ -1,63 +1,142 @@
-# KV-Bench Scripts
+# Benchmarking Scripts
 
-Utility scripts for testing and benchmarking KV-Bench.
+Two scripts for running a head-to-head comparison between a real vLLM server
+and a kvbench emulated server: a harness that drives both systems through
+identical workloads, and a report generator that turns the resulting traces
+into a PDF comparison.
 
-## Scripts
+## run_aiperf_harness.sh
 
-| Script | Description |
-|--------|-------------|
-| `coverage_report.sh` | Run tests with coverage analysis |
-| `genai_perf_test.sh` | GenAI-Perf integration test |
-| `lmcache_test.sh` | LMCache integration test |
+Runs vLLM and kvbench sequentially against the same aiperf workloads, then
+generates a comparison report from the collected traces.
 
-## Usage
+### Requirements
 
-### Coverage Report
+- `HF_TOKEN` set in the environment (Hugging Face access token)
+- A vLLM virtual environment (default: `../vllm/.venv` relative to repo root,
+  or set `VLLM_VENV=/path/to/venv`)
+- `aiperf` binary (default: `.venv/bin/aiperf`, or set `AIPERF=/path/to/aiperf`)
+- An LMCache config file at `run/lmcache.yaml`
 
-Generate test coverage report:
-
-```bash
-./scripts/coverage_report.sh
-```
-
-Output includes:
-- Console coverage summary
-- HTML report in `htmlcov/`
-- XML report for CI integration
-
-### GenAI-Perf Test
-
-Run performance benchmarks with GenAI-Perf:
+### Usage
 
 ```bash
-# Default settings
-./scripts/genai_perf_test.sh
+export HF_TOKEN=<token>
 
-# Custom endpoint
-KVBENCH_ENDPOINT=http://myserver:8000 ./scripts/genai_perf_test.sh
-
-# Custom concurrency
-CONCURRENCY=32 NUM_REQUESTS=500 ./scripts/genai_perf_test.sh
+bash scripts/run_aiperf_harness.sh [OPTIONS] [OUTPUT_DIR]
 ```
 
-### LMCache Test
+If `OUTPUT_DIR` is omitted the script creates `traces/aiperf_run_<timestamp>/`.
 
-Test KV cache hit/miss behavior:
+### Options
+
+| Option | Default | Description |
+|---|---|---|
+| `--cases CASE[,...]` | all | Cases to run: `seq_100` `seq_1000` `conc_5` `conc_10` `mt_10c_5t` `mt_50c_5t` |
+| `--phase vllm\|kvbench\|both` | both | Which system(s) to run |
+| `--gpu PROFILE` | RTX\_PRO\_6000\_BW | kvbench GPU profile for calibration |
+| `--hardware LABEL` | RTX PRO 6000 Blackwell (GPU 0) | Hardware label in the PDF |
+| `--model-name LABEL` | meta-llama/Llama-3.2-1B-Instruct | Model label in the PDF |
+| `--gpu-util FLOAT` | 0.9 | vLLM `--gpu-memory-utilization` |
+
+### Examples
 
 ```bash
-# Default settings
-./scripts/lmcache_test.sh
+# Run only sequential cases
+bash scripts/run_aiperf_harness.sh --cases seq_100,seq_1000
 
-# With real LMCache server
-LMCACHE_URL=lm://localhost:8080 ./scripts/lmcache_test.sh
+# Run kvbench phase only against an existing vLLM trace directory
+bash scripts/run_aiperf_harness.sh --phase kvbench /path/to/existing/traces
+
+# Run on H100 hardware
+bash scripts/run_aiperf_harness.sh \
+    --gpu      H100_SXM \
+    --hardware "NVIDIA H100 SXM" \
+    --cases    seq_100,seq_1000,conc_5,conc_10
 ```
 
-## Environment Variables
+### Output layout
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `KVBENCH_ENDPOINT` | `http://localhost:8000` | Server endpoint |
-| `KVBENCH_MODEL` | `llama-3.1-8b` | Model to test |
-| `CONCURRENCY` | `10` | Concurrent requests |
-| `NUM_REQUESTS` | `100` | Total requests |
-| `LMCACHE_URL` | - | Optional LMCache server |
+```
+OUTPUT_DIR/
+  seq_100/
+    vllm-kv-trace.<pid>.jsonl    real vLLM KV spans
+    vllm-request-trace.jsonl     OTLP request spans
+    kvbench-trace.jsonl          emulated server spans
+    aiperf/                      aiperf artifacts
+  seq_1000/   ...
+  comparison_<gpu_profile>.pdf   generated report
+```
+
+The report filename is derived from the GPU profile:
+`RTX_PRO_6000_BW` produces `comparison_rtx_pro_6000_bw.pdf`.
+
+## compare_report.py
+
+Generates the PDF report from two trace directories. Can be run standalone
+against any existing traces without re-running the servers.
+
+### Usage
+
+```bash
+python scripts/compare_report.py \
+    --vllm-dir    /path/to/traces \
+    --kvbench-dir /path/to/traces \
+    --output      report.pdf
+```
+
+Both `--vllm-dir` and `--kvbench-dir` point to the same directory when the
+harness wrote both systems' traces together (the default setup).
+
+### Options
+
+| Option | Description |
+|---|---|
+| `--cases CASE[,...]` | Subset of cases to include in the report |
+| `--output FILE` | Output PDF path (default: `comparison_<timestamp>.pdf` in current dir) |
+| `--hardware LABEL` | Hardware string shown in the page header |
+| `--model-name LABEL` | Model string shown in the page header |
+| `--kvbench-gpu PROFILE` | GPU profile shown on the cover page |
+| `--no-stddev` | Omit standard deviation from mean cells |
+| `--name STEM` | Stem for the default output filename |
+
+### Examples
+
+```bash
+# Sequential cases only
+python scripts/compare_report.py \
+    --vllm-dir    traces/aiperf_run_20261106 \
+    --kvbench-dir traces/aiperf_run_20261106 \
+    --output      seq_comparison.pdf \
+    --cases       seq_100,seq_1000
+
+# All cases with custom hardware label
+python scripts/compare_report.py \
+    --vllm-dir    traces/run_a \
+    --kvbench-dir traces/run_b \
+    --hardware    "NVIDIA H200 SXM" \
+    --kvbench-gpu H200_SXM \
+    --output      h200_comparison.pdf
+```
+
+### Metrics in the report
+
+Each table row is one metric, summed per request then averaged across all
+requests in that case. The three column groups show mean, p50, and p90 with
+Δ = (kvbench - vLLM) / vLLM.
+
+| Metric | vLLM source | kvbench source |
+|---|---|---|
+| Prefill | OTLP prefill minus kv.load\_init and kv.store | `prefill.compute` span |
+| Decode per token | OTLP decode / completion\_tokens | `decode.step` spans |
+| kv.lookup | `kv.lookup` span | `kv.lookup` span |
+| kv.store | `kv.store` span | `kv.store` span |
+| gpu.copy\_out | `gpu.copy_out` spans summed | `gpu.copy_out` spans summed |
+| gpu.alloc | not present | `gpu.alloc` span (emulator artifact) |
+| io.write | `io.write` spans summed | `io.write` spans summed |
+| kv.retrieve | `kv.load_init` span | `rank.retrieve` span |
+| gpu.copy\_in | `gpu.copy_in` span | `gpu.copy_in` span |
+| io.read | `io.read` spans summed | `io.read` spans summed |
+
+Prefill on the vLLM side subtracts kv.load\_init and kv.store from the OTLP
+prefill window so that KV storage work is not charged to GPU compute.

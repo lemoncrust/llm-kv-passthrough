@@ -284,6 +284,12 @@ exactly as it does in a real vLLM + LMCache deployment.
 └─────────────────────────────────────────────────────────────────┘
 ```
 
+## Fidelity Tracing and Comparison
+
+See [`src/kvbench/vllm_trace/README.md`](src/kvbench/vllm_trace/README.md)
+for the vLLM tracing connector and [`scripts/README.md`](scripts/README.md)
+for the benchmarking harness and comparison report generator.
+
 ## Development
 
 ```bash

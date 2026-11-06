@@ -34,7 +34,7 @@ AIPERF="${AIPERF:-$KB_VENV/bin/aiperf}"
 LMCACHE_CFG="$REPO_DIR/run/lmcache.yaml"
 LMCACHE_CACHE="$REPO_DIR/run/lmcache-cache"
 MODEL="meta-llama/Llama-3.2-1B-Instruct"
-HF_TOKEN="${HF_TOKEN:-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}"
+HF_TOKEN="${HF_TOKEN:?HF_TOKEN must be set in the environment}"
 PORT=8000
 
 # ── Defaults ──────────────────────────────────────────────────────────────────
@@ -43,16 +43,20 @@ OPT_PHASE="both"
 OPT_GPU="RTX_PRO_6000_BW"
 OPT_GPU_UTIL="0.9"
 OPT_OUT=""
+OPT_HARDWARE="NVIDIA RTX PRO 6000 Blackwell (GPU 0)"
+OPT_MODEL_NAME="meta-llama/Llama-3.2-1B-Instruct"
 
 # ── Argument parsing ──────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --cases)   OPT_CASES="$2";    shift 2 ;;
-        --phase)   OPT_PHASE="$2";    shift 2 ;;
-        --gpu)     OPT_GPU="$2";      shift 2 ;;
-        --gpu-util) OPT_GPU_UTIL="$2"; shift 2 ;;
-        --*)       echo "Unknown option: $1"; exit 1 ;;
-        *)         OPT_OUT="$1";      shift ;;
+        --cases)      OPT_CASES="$2";      shift 2 ;;
+        --phase)      OPT_PHASE="$2";      shift 2 ;;
+        --gpu)        OPT_GPU="$2";        shift 2 ;;
+        --gpu-util)   OPT_GPU_UTIL="$2";   shift 2 ;;
+        --hardware)   OPT_HARDWARE="$2";   shift 2 ;;
+        --model-name) OPT_MODEL_NAME="$2"; shift 2 ;;
+        --*)          echo "Unknown option: $1"; exit 1 ;;
+        *)            OPT_OUT="$1";        shift ;;
     esac
 done
 
@@ -83,12 +87,14 @@ fi
 
 echo "══════════════════════════════════════════════════════════"
 echo "  aiperf harness"
-echo "  output:    $OUT"
-echo "  cases:     $OPT_CASES"
-echo "  phase:     $OPT_PHASE"
+echo "  output:      $OUT"
+echo "  cases:       $OPT_CASES"
+echo "  phase:       $OPT_PHASE"
 echo "  kvbench gpu: $OPT_GPU"
-echo "  vllm venv: $VLLM_VENV"
-echo "  aiperf:    $AIPERF"
+echo "  hardware:    $OPT_HARDWARE"
+echo "  model:       $OPT_MODEL_NAME"
+echo "  vllm venv:   $VLLM_VENV"
+echo "  aiperf:      $AIPERF"
 echo "══════════════════════════════════════════════════════════"
 
 # ── Process case filter ────────────────────────────────────────────────────────
@@ -223,7 +229,7 @@ if [[ "$OPT_PHASE" == "vllm" || "$OPT_PHASE" == "both" ]]; then
             --otlp-traces-endpoint "http://localhost:4318/v1/traces" \
             --kv-transfer-config "$KV_CFG" \
             --gpu-memory-utilization "$OPT_GPU_UTIL" \
-            --no-enable-prefix-caching --enforce-eager --port "$PORT" \
+            --no-enable-prefix-caching --port "$PORT" \
             > "$CASE_DIR/vllm.log" 2>&1 &
         VLLM_PID=$!
 
@@ -282,14 +288,18 @@ fi
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "  Generating comparison report..."
+REPORT_NAME="comparison_$(echo "${OPT_GPU}" | tr '[:upper:]' '[:lower:]').pdf"
 "$KB_VENV/bin/python" "$REPO_DIR/scripts/compare_report.py" \
     --vllm-dir    "$OUT" \
     --kvbench-dir "$OUT" \
-    --output      "$OUT/comparison_report.pdf" \
+    --output      "$OUT/$REPORT_NAME" \
+    --hardware    "$OPT_HARDWARE" \
+    --model-name  "$OPT_MODEL_NAME" \
+    --kvbench-gpu "$OPT_GPU" \
     2>&1 | tail -2
 
 echo ""
 echo "══════════════════════════════════════════════════════════"
 echo "  Done. Output:  $OUT"
-echo "  Report:        $OUT/comparison_report.pdf"
+echo "  Report:        $OUT/$REPORT_NAME"
 echo "══════════════════════════════════════════════════════════"
