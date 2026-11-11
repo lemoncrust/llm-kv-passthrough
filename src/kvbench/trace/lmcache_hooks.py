@@ -189,7 +189,6 @@ def _bind_reads(backend: Any, tracer: Tracer, keys: Any, parent: Any) -> None:
 
 def _ensure_connector_io_wrapped(backend: Any, tier: str, tracer: Tracer) -> None:
     """Lazily wrap FSConnector.put/get the first time a live connection appears.
-    DEBUG: writes to /tmp/kvbench-hook-debug.txt
 
     RemoteBackend establishes its connection on the first real operation, not
     at engine post_init time, so the connection object is None when
@@ -199,18 +198,20 @@ def _ensure_connector_io_wrapped(backend: Any, tier: str, tracer: Tracer) -> Non
     conn = getattr(backend, "connection", None)
     if conn is None or getattr(conn, "_kvbench_io_wrapped", False):
         return
-    if _fs_connector(backend) is None:
+    fs_conn = _fs_connector(backend)
+    if fs_conn is None:
         return
     _install_rename_trace(tracer)
     _wrap_remote_connector_io(backend, tier, tracer)
     conn._kvbench_io_wrapped = True
+    # Read O_DIRECT attrs from the inner FSConnector, not the wrapper
     tracer.mark(
         "lmcache.backend_info",
         parent=None,
         tier=tier,
         backend_name=tier,
-        use_odirect=bool(getattr(conn, "use_odirect", False)),
-        os_disk_bs=getattr(conn, "os_disk_bs", None),
+        use_odirect=bool(getattr(fs_conn, "use_odirect", False)),
+        os_disk_bs=getattr(fs_conn, "os_disk_bs", None),
     )
     logger.warning(f"KV trace: lazily wrapped FSConnector io for {tier}")
 
