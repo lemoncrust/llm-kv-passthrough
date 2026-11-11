@@ -16,7 +16,9 @@ same seam LMCache's own AuditBackend uses:
 - LocalDiskBackend.write_file / read_file -> ``io.write`` / ``io.read``,
   the operations a disk actually sees (path, bytes, duration)
 - RemoteBackend + FSConnector.put / get -> ``io.write`` / ``io.read``,
-  same semantics for the ``fs://`` remote backend (async, event-loop thread)
+  same semantics for the ``fs://`` remote backend (async, event-loop thread).
+  ``io.write.path`` is the temp file; ``io.rename`` (src=temp, dst=final) is
+  the subsequent atomic promote — both nested under the same ``lmcache.put``.
 
 and the engine's StorageManager.get_block_mapping -> ``lmcache.block_map``
 per tier: the point where LMCache assigns each chunk of a retrieve to the
@@ -45,6 +47,34 @@ from kvbench.trace import spans
 from kvbench.trace.spans import Tracer
 
 logger = logging.getLogger(__name__)
+
+
+def _install_rename_trace(tracer: Tracer) -> None:
+    """Patch aiofiles.os.replace once to emit io.rename spans.
+
+    Uses the same bind/unbind pattern as the write/read hooks: traced_put
+    binds ("rename", temp_path) → parent before calling orig_put; this hook
+    unbinds it and nests io.rename under the same parent.  The patch is
+    process-wide but harmless for untraced calls (unbind returns None and the
+    span is skipped).
+    """
+    try:
+        import aiofiles.os as _aio_os
+    except ImportError:
+        return
+    if getattr(_aio_os, "_kvbench_rename_wrapped", False):
+        return
+    orig_replace = _aio_os.replace
+
+    async def _traced_replace(src: Any, dst: Any, *a: Any, **kw: Any) -> Any:
+        parent = tracer.unbind(("rename", str(src)))
+        if parent is not None:
+            with spans.span("io.rename", parent=parent, src=str(src), dst=str(dst)):
+                return await orig_replace(src, dst, *a, **kw)
+        return await orig_replace(src, dst, *a, **kw)
+
+    _aio_os.replace = _traced_replace
+    _aio_os._kvbench_rename_wrapped = True
 
 
 def install_lmcache_trace(engine: Any, tracer: Tracer) -> list[str]:
@@ -94,10 +124,12 @@ def install_lmcache_trace(engine: Any, tracer: Tracer) -> list[str]:
     return wrapped
 
 
-def _chunk_hash(key: Any) -> int | str | None:
+def _chunk_hash(key: Any) -> str | None:
     value = getattr(key, "chunk_hash", None)
-    if value is None or isinstance(value, (int, str)):
-        return value
+    if value is None:
+        return None
+    if isinstance(value, int):
+        return format(value, "x")  # hex matches the filename component (e.g. -b5b60e31670ed7b)
     return str(value)
 
 
@@ -169,6 +201,7 @@ def _ensure_connector_io_wrapped(backend: Any, tier: str, tracer: Tracer) -> Non
         return
     if _fs_connector(backend) is None:
         return
+    _install_rename_trace(tracer)
     _wrap_remote_connector_io(backend, tier, tracer)
     conn._kvbench_io_wrapped = True
     tracer.mark(
@@ -319,16 +352,15 @@ def _wrap_remote_connector_io(backend: Any, tier: str, tracer: Tracer) -> None:
     orig_get = conn.get
 
     async def traced_put(key, memory_obj, *args, **kwargs):  # type: ignore[no-untyped-def]
-        path = str(fs_conn._get_file_path(key))
-        parent = tracer.unbind(("write", path))
+        final_path = str(fs_conn._get_file_path(key))
+        _, tmp_path_obj = fs_conn._get_file_and_tmp_path(key)
+        temp_path = str(tmp_path_obj)
+        parent = tracer.unbind(("write", final_path))
+        p = parent if parent is not None else spans.current()
         size = len(memory_obj.byte_array) if memory_obj is not None else None
-        with spans.span(
-            "io.write",
-            parent=parent if parent is not None else spans.current(),
-            tier=tier,
-            path=path,
-            bytes=size,
-        ):
+        # Bind temp_path so _traced_replace can nest io.rename under same parent
+        tracer.bind(("rename", temp_path), p)
+        with spans.span("io.write", parent=p, tier=tier, path=temp_path, bytes=size):
             result = await orig_put(key, memory_obj, *args, **kwargs)
             if size is not None:
                 tracer.count("io", "write", tier, size)
