@@ -256,20 +256,28 @@ def _wrap_logical(backend: Any, tier: str, tracer: Tracer) -> None:
         with spans.span("lmcache.contains", tier=tier, chunk_hash=_chunk_hash(key)) as sp:
             result = orig_contains(key, *args, **kwargs)
             extra: dict = {}
-            if result:
-                disk_dict = getattr(backend, "dict", None)
-                if disk_dict is not None:
+            # Record path for both hit and miss: the path is deterministic from
+            # the key, so a miss still tells us which file was probed.
+            disk_dict = getattr(backend, "dict", None)
+            if disk_dict is not None:
+                # LocalDiskBackend: on hit, dict has metadata with real path/size
+                if result:
                     meta = disk_dict.get(key)
                     if meta is not None:
                         extra["path"] = str(getattr(meta, "path", ""))
                         size = getattr(meta, "size", None)
                         if size is not None:
                             extra["size_bytes"] = size
-                elif (fs_c := _fs_connector(backend)) is not None:
-                    try:
-                        extra["path"] = str(fs_c._get_file_path(key))
-                    except Exception:
-                        pass
+                else:
+                    path = _target_path(backend, key)
+                    if path:
+                        extra["path"] = path
+            elif (fs_c := _fs_connector(backend)) is not None:
+                # RemoteBackend + FSConnector: path is always computable from key
+                try:
+                    extra["path"] = str(fs_c._get_file_path(key))
+                except Exception:
+                    pass
             sp.set(hit=bool(result), **extra)
             tracer.count("logical", "contains", tier)
         return result
