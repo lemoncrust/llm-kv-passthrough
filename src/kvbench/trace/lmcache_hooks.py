@@ -250,27 +250,25 @@ def _wrap_logical(backend: Any, tier: str, tracer: Tracer) -> None:
         return result
 
     def traced_contains(key, *args, **kwargs):  # type: ignore[no-untyped-def]
-        result = orig_contains(key, *args, **kwargs)
-        extra: dict = {}
-        if result:
-            disk_dict = getattr(backend, "dict", None)
-            if disk_dict is not None:
-                meta = disk_dict.get(key)
-                if meta is not None:
-                    extra["path"] = str(getattr(meta, "path", ""))
-                    size = getattr(meta, "size", None)
-                    if size is not None:
-                        extra["size_bytes"] = size
-            elif (fs_c := _fs_connector(backend)) is not None:
-                try:
-                    extra["path"] = str(fs_c._get_file_path(key))
-                except Exception:
-                    pass
-        tracer.mark(
-            "lmcache.contains", tier=tier, chunk_hash=_chunk_hash(key),
-            hit=bool(result), **extra,
-        )
-        tracer.count("logical", "contains", tier)
+        with spans.span("lmcache.contains", tier=tier, chunk_hash=_chunk_hash(key)) as sp:
+            result = orig_contains(key, *args, **kwargs)
+            extra: dict = {}
+            if result:
+                disk_dict = getattr(backend, "dict", None)
+                if disk_dict is not None:
+                    meta = disk_dict.get(key)
+                    if meta is not None:
+                        extra["path"] = str(getattr(meta, "path", ""))
+                        size = getattr(meta, "size", None)
+                        if size is not None:
+                            extra["size_bytes"] = size
+                elif (fs_c := _fs_connector(backend)) is not None:
+                    try:
+                        extra["path"] = str(fs_c._get_file_path(key))
+                    except Exception:
+                        pass
+            sp.set(hit=bool(result), **extra)
+            tracer.count("logical", "contains", tier)
         return result
 
     def traced_remove(key, *args, **kwargs):  # type: ignore[no-untyped-def]
