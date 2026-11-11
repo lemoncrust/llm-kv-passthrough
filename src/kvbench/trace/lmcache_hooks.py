@@ -15,6 +15,8 @@ same seam LMCache's own AuditBackend uses:
 - remove                   -> ``lmcache.evict`` (the eviction path)
 - LocalDiskBackend.write_file / read_file -> ``io.write`` / ``io.read``,
   the operations a disk actually sees (path, bytes, duration)
+- RemoteBackend + FSConnector.put / get -> ``io.write`` / ``io.read``,
+  same semantics for the ``fs://`` remote backend (async, event-loop thread)
 
 and the engine's StorageManager.get_block_mapping -> ``lmcache.block_map``
 per tier: the point where LMCache assigns each chunk of a retrieve to the
@@ -83,6 +85,8 @@ def install_lmcache_trace(engine: Any, tracer: Tracer) -> list[str]:
                 use_odirect=bool(getattr(backend, "use_odirect", False)),
                 os_disk_bs=getattr(backend, "os_disk_bs", None),
             )
+        # RemoteBackend + FSConnector: connection is established lazily on the
+        # first operation; _ensure_connector_io_wrapped handles it from there.
         wrapped.append(name)
         logger.info(f"KV trace hooks installed on backend {name} ({tier})")
 
@@ -104,15 +108,39 @@ def _obj_size(memory_obj: Any) -> int | None:
         return None
 
 
+def _fs_connector(backend: Any) -> Any:
+    """Return the FSConnector (or FSConnector-shaped object) for a backend.
+
+    Handles both direct connections and InstrumentedRemoteConnector wrappers.
+    Returns None if the backend has no FSConnector-shaped inner connector.
+    """
+    conn = getattr(backend, "connection", None)
+    if conn is None:
+        return None
+    if hasattr(conn, "_get_file_path"):
+        return conn
+    # InstrumentedRemoteConnector wraps the real connector in _connector
+    inner = getattr(conn, "_connector", None)
+    if inner is not None and hasattr(inner, "_get_file_path"):
+        return inner
+    return None
+
+
 def _target_path(backend: Any, key: Any) -> str | None:
-    """The file a disk backend will write ``key`` to, if it can tell us."""
+    """The file a backend will write ``key`` to, if it can tell us."""
     key_to_path = getattr(backend, "_key_to_path", None)
-    if key_to_path is None:
-        return None
-    try:
-        return str(key_to_path(key))
-    except Exception:
-        return None
+    if key_to_path is not None:
+        try:
+            return str(key_to_path(key))
+        except Exception:
+            return None
+    fs_conn = _fs_connector(backend)
+    if fs_conn is not None:
+        try:
+            return str(fs_conn._get_file_path(key))
+        except Exception:
+            return None
+    return None
 
 
 def _bind_reads(backend: Any, tracer: Tracer, keys: Any, parent: Any) -> None:
@@ -127,6 +155,33 @@ def _bind_reads(backend: Any, tracer: Tracer, keys: Any, parent: Any) -> None:
             tracer.bind(("read", path), parent)
 
 
+def _ensure_connector_io_wrapped(backend: Any, tier: str, tracer: Tracer) -> None:
+    """Lazily wrap FSConnector.put/get the first time a live connection appears.
+    DEBUG: writes to /tmp/kvbench-hook-debug.txt
+
+    RemoteBackend establishes its connection on the first real operation, not
+    at engine post_init time, so the connection object is None when
+    install_lmcache_trace runs.  This helper is called from the already-wrapped
+    logical methods; it no-ops until the connection is live, then wraps once.
+    """
+    conn = getattr(backend, "connection", None)
+    if conn is None or getattr(conn, "_kvbench_io_wrapped", False):
+        return
+    if _fs_connector(backend) is None:
+        return
+    _wrap_remote_connector_io(backend, tier, tracer)
+    conn._kvbench_io_wrapped = True
+    tracer.mark(
+        "lmcache.backend_info",
+        parent=None,
+        tier=tier,
+        backend_name=tier,
+        use_odirect=bool(getattr(conn, "use_odirect", False)),
+        os_disk_bs=getattr(conn, "os_disk_bs", None),
+    )
+    logger.warning(f"KV trace: lazily wrapped FSConnector io for {tier}")
+
+
 def _wrap_logical(backend: Any, tier: str, tracer: Tracer) -> None:
     """Wrap key-level operations on a backend instance."""
     orig_put = backend.batched_submit_put_task
@@ -135,6 +190,7 @@ def _wrap_logical(backend: Any, tier: str, tracer: Tracer) -> None:
     orig_remove = backend.remove
 
     def traced_batched_submit_put_task(keys, memory_objs, *args, **kwargs):  # type: ignore[no-untyped-def]
+        _ensure_connector_io_wrapped(backend, tier, tracer)
         for key, obj in zip(keys, memory_objs, strict=False):
             size = _obj_size(obj)
             chunk_hash = _chunk_hash(key)
@@ -150,6 +206,7 @@ def _wrap_logical(backend: Any, tier: str, tracer: Tracer) -> None:
         return orig_put(keys, memory_objs, *args, **kwargs)
 
     def traced_get_blocking(key, *args, **kwargs):  # type: ignore[no-untyped-def]
+        _ensure_connector_io_wrapped(backend, tier, tracer)
         with spans.span("lmcache.get", tier=tier, chunk_hash=_chunk_hash(key)) as sp:
             _bind_reads(backend, tracer, [key], sp)
             result = orig_get(key, *args, **kwargs)
@@ -160,7 +217,25 @@ def _wrap_logical(backend: Any, tier: str, tracer: Tracer) -> None:
 
     def traced_contains(key, *args, **kwargs):  # type: ignore[no-untyped-def]
         result = orig_contains(key, *args, **kwargs)
-        tracer.mark("lmcache.contains", tier=tier, chunk_hash=_chunk_hash(key), hit=bool(result))
+        extra: dict = {}
+        if result:
+            disk_dict = getattr(backend, "dict", None)
+            if disk_dict is not None:
+                meta = disk_dict.get(key)
+                if meta is not None:
+                    extra["path"] = str(getattr(meta, "path", ""))
+                    size = getattr(meta, "size", None)
+                    if size is not None:
+                        extra["size_bytes"] = size
+            elif (fs_c := _fs_connector(backend)) is not None:
+                try:
+                    extra["path"] = str(fs_c._get_file_path(key))
+                except Exception:
+                    pass
+        tracer.mark(
+            "lmcache.contains", tier=tier, chunk_hash=_chunk_hash(key),
+            hit=bool(result), **extra,
+        )
         tracer.count("logical", "contains", tier)
         return result
 
@@ -229,6 +304,54 @@ def _wrap_logical(backend: Any, tier: str, tracer: Tracer) -> None:
             return result
 
         backend.batched_get_non_blocking = traced_batched_get_non_blocking
+
+
+def _wrap_remote_connector_io(backend: Any, tier: str, tracer: Tracer) -> None:
+    """Wrap FSConnector.put/get to emit io.write/io.read spans for RemoteBackend.
+
+    Works through InstrumentedRemoteConnector: wraps the outer connection's
+    put/get (which RemoteBackend calls) but resolves paths via the inner
+    FSConnector (_connector attribute).
+    """
+    conn = backend.connection  # may be InstrumentedRemoteConnector
+    fs_conn = _fs_connector(backend)  # the actual FSConnector
+    orig_put = conn.put
+    orig_get = conn.get
+
+    async def traced_put(key, memory_obj, *args, **kwargs):  # type: ignore[no-untyped-def]
+        path = str(fs_conn._get_file_path(key))
+        parent = tracer.unbind(("write", path))
+        size = len(memory_obj.byte_array) if memory_obj is not None else None
+        with spans.span(
+            "io.write",
+            parent=parent if parent is not None else spans.current(),
+            tier=tier,
+            path=path,
+            bytes=size,
+        ):
+            result = await orig_put(key, memory_obj, *args, **kwargs)
+            if size is not None:
+                tracer.count("io", "write", tier, size)
+        return result
+
+    async def traced_get(key, *args, **kwargs):  # type: ignore[no-untyped-def]
+        path = str(fs_conn._get_file_path(key))
+        parent = tracer.unbind(("read", path))
+        with spans.span(
+            "io.read",
+            parent=parent if parent is not None else spans.current(),
+            tier=tier,
+            path=path,
+        ) as sp:
+            result = await orig_get(key, *args, **kwargs)
+            size = _obj_size(result) if result is not None else 0
+            sp.set(bytes=size)
+            if size:
+                tracer.count("io", "read", tier, size)
+        return result
+
+    conn.put = traced_put
+    conn.get = traced_get
 
 
 def _wrap_disk_io(backend: Any, tier: str, tracer: Tracer) -> None:
