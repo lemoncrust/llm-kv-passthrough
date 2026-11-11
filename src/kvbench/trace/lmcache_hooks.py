@@ -67,9 +67,12 @@ def _install_rename_trace(tracer: Tracer) -> None:
     orig_replace = _aio_os.replace
 
     async def _traced_replace(src: Any, dst: Any, *a: Any, **kw: Any) -> Any:
-        parent = tracer.unbind(("rename", str(src)))
-        if parent is not None:
-            with spans.span("io.rename", parent=parent, src=str(src), dst=str(dst)):
+        # unbind is the "is this ours?" signal; the actual parent is
+        # spans.current() which at this point is the open io.write span,
+        # making io.rename a child of io.write (not a sibling under lmcache.put).
+        is_ours = tracer.unbind(("rename", str(src))) is not None
+        if is_ours:
+            with spans.span("io.rename", parent=spans.current(), src=str(src), dst=str(dst)):
                 return await orig_replace(src, dst, *a, **kw)
         return await orig_replace(src, dst, *a, **kw)
 
@@ -357,7 +360,8 @@ def _wrap_remote_connector_io(backend: Any, tier: str, tracer: Tracer) -> None:
         parent = tracer.unbind(("write", final_path))
         p = parent if parent is not None else spans.current()
         size = len(memory_obj.byte_array) if memory_obj is not None else None
-        # Bind temp_path so _traced_replace can nest io.rename under same parent
+        # Mark this rename as ours; _traced_replace uses spans.current() (= io.write)
+        # as parent so io.rename nests under io.write, not under lmcache.put.
         tracer.bind(("rename", temp_path), p)
         with spans.span("io.write", parent=p, tier=tier, path=temp_path, bytes=size):
             result = await orig_put(key, memory_obj, *args, **kwargs)
