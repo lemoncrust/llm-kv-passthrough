@@ -32,7 +32,7 @@ KB_VENV="$REPO_DIR/.venv"
 VLLM_VENV="${VLLM_VENV:-$(dirname "$REPO_DIR")/vllm/.venv}"
 AIPERF="${AIPERF:-$KB_VENV/bin/aiperf}"
 MODEL="meta-llama/Llama-3.2-1B-Instruct"
-HF_TOKEN="${HF_TOKEN:?HF_TOKEN must be set in the environment}"
+HF_TOKEN="${HF_TOKEN:-}"
 PORT=8000
 
 # ── Defaults ──────────────────────────────────────────────────────────────────
@@ -85,8 +85,14 @@ if [[ ! -f "$OPT_LMCACHE_CFG" ]]; then
     echo "ERROR: lmcache config not found: $OPT_LMCACHE_CFG"
     exit 1
 fi
-if [[ -z "$OPT_LMCACHE_CACHE" ]]; then
-    echo "ERROR: --lmcache-cache is required"
+if [[ "$OPT_PHASE" == "vllm" || "$OPT_PHASE" == "both" ]]; then
+    if [[ -z "$HF_TOKEN" ]]; then
+        echo "ERROR: HF_TOKEN must be set for vllm/both phase"
+        exit 1
+    fi
+fi
+if [[ -z "$OPT_LMCACHE_CACHE" && "$OPT_PHASE" != "kvbench" ]]; then
+    echo "ERROR: --lmcache-cache is required for vllm/both phase"
     echo "       Example: --lmcache-cache /tmp/lmcache-cache"
     exit 1
 fi
@@ -164,6 +170,10 @@ stop_otlp() {
 }
 
 clean_lmcache() {
+    if [[ -z "$OPT_LMCACHE_CACHE" ]]; then
+        echo "  lmcache cache dir not set, skipping clear"
+        return 0
+    fi
     rm -rf "$OPT_LMCACHE_CACHE"; mkdir -p "$OPT_LMCACHE_CACHE"
     echo "  lmcache cleared"
 }
