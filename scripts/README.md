@@ -183,7 +183,7 @@ averaged across all requests in that case.
 | gpu.copy\_out | `gpu.copy_out` spans summed per request | `gpu.copy_out` spans summed |
 | gpu.alloc | not present in real vLLM | `gpu.alloc` span (emulator artifact) |
 | io.write | `io.write` spans summed per request | `io.write` spans summed |
-| kv.retrieve | `kv.load_init` span | `rank.retrieve` span |
+| kv.retrieve | `kv.load_init` span | `kv.retrieve` span |
 | gpu.copy\_in | `gpu.copy_in` span | `gpu.copy_in` span |
 | io.read | `io.read` spans summed per request | `io.read` spans summed |
 

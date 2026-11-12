@@ -405,7 +405,7 @@ def gather_metrics(vllm_spans: list[dict], kb_spans: list[dict],
     # kv.retrieve — present on cache hits
     add("kv.retrieve",
         per_request(vllm_spans, "kv.load_init", show_std, only_real=True),
-        kb("rank.retrieve"),
+        kb("kv.retrieve"),
         required_both=True)
 
     # gpu.copy_in — directly below kv.retrieve (CPU pinned → GPU HBM)
