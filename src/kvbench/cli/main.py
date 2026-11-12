@@ -63,6 +63,12 @@ def serve(
         help="With --trace-file: one span per generated token (default) or a "
         "per-token timestamp array on the decode span",
     ),
+    trace_cpu_tier: bool | None = typer.Option(
+        None,
+        "--trace-cpu-tier/--no-trace-cpu-tier",
+        help="With --trace-file: also record LMCache CPU-tier (RAM) operations "
+        "as lmcache.* spans with tier=LocalCPUBackend (default: off)",
+    ),
     random_fill: bool | None = typer.Option(
         None,
         "--random-fill/--no-random-fill",
@@ -165,6 +171,7 @@ def serve(
             "lmcache_config_file": lmcache_config,
             "trace_file": trace_file,
             "trace_decode_steps": trace_decode_steps,
+            "trace_cpu_tier": trace_cpu_tier,
             "random_fill": random_fill,
         }.items()
         if value is not None

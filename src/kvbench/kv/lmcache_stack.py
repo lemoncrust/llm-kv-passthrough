@@ -56,6 +56,7 @@ class LMCacheStack(KVStack):
         instance_id: str = "kvbench",
         config_file: Path | str | None = None,
         trace_file: Path | str | None = None,
+        trace_cpu_tier: bool = False,
         random_fill: bool = True,
         random_pool_mb: int = 256,
         tp_size: int = 1,
@@ -64,6 +65,7 @@ class LMCacheStack(KVStack):
         self.model_profile = model_profile
         self.config_file = config_file
         self.trace_file = trace_file
+        self.trace_cpu_tier = trace_cpu_tier
         self.random_fill = random_fill
         self.random_pool_mb = random_pool_mb
         # Tensor parallelism: emulate one LMCache engine per TP rank, exactly
@@ -172,7 +174,7 @@ class LMCacheStack(KVStack):
             if self._tracer is not None:
                 from kvbench.trace.lmcache_hooks import install_lmcache_trace
 
-                wrapped = install_lmcache_trace(engine, self._tracer)
+                wrapped = install_lmcache_trace(engine, self._tracer, trace_cpu_tier=self.trace_cpu_tier)
                 logger.info(
                     f"KV trace enabled for rank {rank} -> {self.trace_file} "
                     f"(backends: {wrapped})"

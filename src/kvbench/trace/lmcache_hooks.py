@@ -18,8 +18,27 @@ same seam LMCache's own AuditBackend uses:
 
 and the engine's StorageManager.get_block_mapping -> ``lmcache.block_map``
 per tier: the point where LMCache assigns each chunk of a retrieve to the
-tier that serves it (covers the CPU tier too, which is otherwise left
-unwrapped: RAM, not storage I/O).
+tier that serves it.
+
+The CPU tier (LocalCPUBackend) is RAM, not storage I/O, and is left
+unwrapped unless ``trace_cpu_tier`` is set. When it is, the same logical
+hooks apply with ``tier=LocalCPUBackend`` (never ``io.*``: nothing is
+copied, a CPU put is a dict insert and a CPU get hands back the resident
+object). Reading those spans:
+
+- the CPU tier is probed first in a lookup, so the disk tier's
+  ``batched_contains.n`` is the total minus the CPU hits;
+- stores are write-through: every chunk gets one ``lmcache.put`` per tier,
+  so put counts must not be summed across tiers;
+- a CPU ``lmcache.put`` under a retrieve (not a store) is a promotion:
+  LMCache copies chunks served from disk into the CPU tier right after
+  reading them;
+- a CPU ``lmcache.evict`` is a demotion (the disk copy stays); a disk
+  evict is a loss. CPU evictions fire inside memory allocation, on the
+  request thread that is storing or retrieving, so they nest there;
+- at shutdown LocalCPUBackend.close() clears the resident set through
+  remove(): those evicts sit under a root ``lmcache.clear`` span, outside
+  any request, and are not pressure evictions.
 
 Spans nest under whatever request step is current on the calling thread
 (contains under kv.lookup, block_map/get under rank.retrieve, put and
@@ -45,12 +64,16 @@ from kvbench.trace.spans import Tracer
 logger = logging.getLogger(__name__)
 
 
-def install_lmcache_trace(engine: Any, tracer: Tracer) -> list[str]:
+def install_lmcache_trace(
+    engine: Any, tracer: Tracer, *, trace_cpu_tier: bool = False
+) -> list[str]:
     """Install span hooks on a started LMCache engine.
 
     Args:
         engine: A started lmcache.v1 cache engine.
         tracer: The active span tracer (owns bindings and counters).
+        trace_cpu_tier: Also wrap the LocalCPUBackend (RAM) tier; off by
+            default so traces contain storage operations only.
 
     Returns:
         Names of the storage backends that were wrapped.
@@ -71,6 +94,19 @@ def install_lmcache_trace(engine: Any, tracer: Tracer) -> list[str]:
     for name, backend in backends.items():
         tier = type(backend).__name__
         if tier == "LocalCPUBackend":
+            if not trace_cpu_tier:
+                continue
+            _wrap_logical(backend, tier, tracer)
+            cfg = getattr(backend, "config", None)
+            tracer.mark(
+                "lmcache.backend_info",
+                parent=None,
+                tier=tier,
+                backend_name=name,
+                max_local_cpu_size_gb=getattr(cfg, "max_local_cpu_size", None),
+            )
+            wrapped.append(name)
+            logger.info(f"KV trace hooks installed on backend {name} ({tier})")
             continue
         _wrap_logical(backend, tier, tracer)
         if hasattr(backend, "write_file") and hasattr(backend, "read_file"):
@@ -195,6 +231,20 @@ def _wrap_logical(backend: Any, tier: str, tracer: Tracer) -> None:
             return result
 
         backend.batched_contains = traced_batched_contains
+
+    # Shutdown flush: clear() removes every resident chunk through remove();
+    # one enclosing span keeps those apart from pressure evictions.
+    orig_clear = getattr(backend, "clear", None)
+    if orig_clear is not None:
+
+        def traced_clear(*args, **kwargs):  # type: ignore[no-untyped-def]
+            with spans.span("lmcache.clear", tier=tier) as sp:
+                result = orig_clear(*args, **kwargs)
+                if isinstance(result, int):
+                    sp.set(tokens=result)
+            return result
+
+        backend.clear = traced_clear
 
     # Batched blocking read path (used by the retrieve block-mapping path)
     orig_batched_get_blocking = getattr(backend, "batched_get_blocking", None)

@@ -53,6 +53,7 @@ def create_kv_stack(config: KVBenchConfig) -> KVStack:
             instance_id=config.instance_id,
             config_file=config.kv.lmcache_config_file,
             trace_file=config.kv.trace_file,
+            trace_cpu_tier=config.kv.trace_cpu_tier,
             random_fill=config.kv.random_fill,
             random_pool_mb=config.kv.random_pool_mb,
             tp_size=config.gpu.tp_size,

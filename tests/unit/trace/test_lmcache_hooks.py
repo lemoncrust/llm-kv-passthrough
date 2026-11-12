@@ -95,7 +95,37 @@ class FakeDiskBackend:
 
 
 class FakeCPUBackend:
-    pass
+    """Duck-typed LocalCPUBackend: resident objects in a dict, no file I/O."""
+
+    class Cfg:
+        max_local_cpu_size = 0.25
+
+    def __init__(self) -> None:
+        self.hot: dict[str, FakeMemoryObj] = {}
+        self.keys: dict[str, FakeKey] = {}
+        self.config = self.Cfg()
+
+    def contains(self, key, pin=False):  # noqa: ARG002
+        return str(key) in self.hot
+
+    def batched_submit_put_task(self, keys, memory_objs, transfer_spec=None):  # noqa: ARG002
+        for key, obj in zip(keys, memory_objs, strict=True):
+            self.hot.setdefault(str(key), obj)
+            self.keys.setdefault(str(key), key)
+
+    def get_blocking(self, key):
+        return self.hot.get(str(key))
+
+    def remove(self, key, force=True):  # noqa: ARG002
+        self.keys.pop(str(key), None)
+        return self.hot.pop(str(key), None) is not None
+
+    def clear(self) -> int:
+        # like LocalCPUBackend.close(): drop every resident chunk via remove()
+        keys = list(self.keys.values())
+        for key in keys:
+            self.remove(key, force=True)
+        return 256 * len(keys)
 
 
 FakeCPUBackend.__name__ = "LocalCPUBackend"
@@ -144,6 +174,80 @@ class TestInstall:
     def test_skips_cpu_backend(self, tracer):
         wrapped = install_lmcache_trace(FakeEngine({"LocalCPUBackend": FakeCPUBackend()}), tracer)
         assert wrapped == []
+        assert all(r["name"] != "lmcache.backend_info" for r in read(tracer))
+
+    def test_cpu_backend_wrapped_when_enabled(self, tracer):
+        cpu, disk = FakeCPUBackend(), FakeDiskBackend()
+        engine = FakeEngine({"LocalCPUBackend": cpu, "LocalDiskBackend": disk})
+        wrapped = install_lmcache_trace(engine, tracer, trace_cpu_tier=True)
+        assert wrapped == ["LocalCPUBackend", "LocalDiskBackend"]
+        infos = {
+            r["attrs"]["tier"]: r["attrs"]
+            for r in read(tracer)
+            if r["name"] == "lmcache.backend_info"
+        }
+        assert infos["LocalCPUBackend"] == {
+            "tier": "LocalCPUBackend",
+            "backend_name": "LocalCPUBackend",
+            "max_local_cpu_size_gb": 0.25,
+        }
+
+        # write-through store: one put per tier for the same chunk, io.write only for disk
+        with spans.root("request", trace_id="owner"), spans.span("rank.store") as store:
+            for backend in (cpu, disk):
+                backend.batched_submit_put_task([FakeKey(7)], [FakeMemoryObj(16)])
+        disk.join_writers()
+        # lookup probes the CPU tier; a CPU-served retrieve is a get with no io.read;
+        # then a CPU eviction (demotion) records the owner and leaves the disk copy alone
+        with spans.root("request", trace_id="reader"), spans.span("kv.lookup"):
+            assert cpu.contains(FakeKey(7)) is True
+        with spans.root("request", trace_id="reader"), spans.span("rank.retrieve"):
+            assert cpu.get_blocking(FakeKey(7)) is not None
+        with spans.root("request", trace_id="evictor"), spans.span("rank.store"):
+            assert cpu.remove(FakeKey(7)) is True
+        assert disk.contains(FakeKey(7)) is True
+
+        recs = read(tracer)
+
+        def by(name, tier):
+            return [r for r in recs if r["name"] == name and r["attrs"].get("tier") == tier]
+
+        (cpu_put,) = by("lmcache.put", "LocalCPUBackend")
+        (disk_put,) = by("lmcache.put", "FakeDiskBackend")
+        assert cpu_put["parent_id"] == disk_put["parent_id"] == store.span_id
+        assert cpu_put["attrs"]["chunk_hash"] == disk_put["attrs"]["chunk_hash"] == 7
+        assert len(by("io.write", "FakeDiskBackend")) == 1 and not by("io.write", "LocalCPUBackend")
+        (probe,) = by("lmcache.contains", "LocalCPUBackend")
+        assert probe["attrs"]["hit"] is True
+        (get,) = by("lmcache.get", "LocalCPUBackend")
+        assert get["attrs"]["hit"] is True and get["attrs"]["bytes"] == 16
+        assert not [r for r in recs if r["name"] == "io.read"]
+        (evict,) = by("lmcache.evict", "LocalCPUBackend")
+        assert evict["trace_id"] == "evictor"
+        assert evict["attrs"] == {
+            "tier": "LocalCPUBackend",
+            "chunk_hash": 7,
+            "removed": True,
+            "owner_trace_id": "owner",
+        }
+        assert not by("lmcache.evict", "FakeDiskBackend")
+        assert tracer.counters[("logical", "put", "LocalCPUBackend")] == [1, 16]
+        assert tracer.counters[("logical", "remove", "LocalCPUBackend")] == [1, 0]
+
+    def test_cpu_clear_at_shutdown_nests_its_removes(self, tracer):
+        cpu = FakeCPUBackend()
+        install_lmcache_trace(FakeEngine({"LocalCPUBackend": cpu}), tracer, trace_cpu_tier=True)
+        with spans.root("request", trace_id="owner"):
+            cpu.batched_submit_put_task([FakeKey(1), FakeKey(2)], [FakeMemoryObj(8)] * 2)
+        assert cpu.clear() == 512  # outside any request, as close() runs at shutdown
+
+        recs = read(tracer)
+        (clear,) = (r for r in recs if r["name"] == "lmcache.clear")
+        assert clear["parent_id"] is None
+        assert clear["attrs"] == {"tier": "LocalCPUBackend", "tokens": 512}
+        evicts = [r for r in recs if r["name"] == "lmcache.evict"]
+        assert len(evicts) == 2 and all(e["parent_id"] == clear["span_id"] for e in evicts)
+        assert {e["attrs"]["owner_trace_id"] for e in evicts} == {"owner"}
 
     def test_missing_surface_raises(self, tracer):
         with pytest.raises(RuntimeError, match="storage_backends"):

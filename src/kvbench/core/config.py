@@ -53,6 +53,12 @@ class KVStackConfig(BaseModel):
         "(decode.step); when off, the decode span carries a per-token "
         "timestamp array instead",
     )
+    trace_cpu_tier: bool = Field(
+        default=False,
+        description="With trace_file: also record LMCache's CPU (RAM) tier "
+        "operations as lmcache.* spans with tier=LocalCPUBackend (contains, "
+        "put, get, evict); off by default because they are not storage I/O",
+    )
     random_fill: bool = Field(
         default=True,
         description="Fill mock KV tensors with random data so stored bytes are "
